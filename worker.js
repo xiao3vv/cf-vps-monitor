@@ -3374,8 +3374,22 @@ function getProgressBarHtml(percentage) {
 // Render the server table using DOM manipulation
 function renderServerTable(allStatuses) {
     const tableBody = document.getElementById('serverTableBody');
-    tableBody.innerHTML = ''; // Clear existing rows
     const detailsTemplate = document.getElementById('serverDetailsTemplate');
+
+    // 1. Store IDs of currently expanded servers
+    const expandedServerIds = new Set();
+    // Iterate over main server rows to find their expanded detail rows
+    tableBody.querySelectorAll('tr.server-row').forEach(mainRow => {
+        const detailRow = mainRow.nextElementSibling;
+        if (detailRow && detailRow.classList.contains('server-details-row') && !detailRow.classList.contains('d-none')) {
+            const serverId = mainRow.getAttribute('data-server-id');
+            if (serverId) {
+                expandedServerIds.add(serverId);
+            }
+        }
+    });
+
+    tableBody.innerHTML = ''; // Clear existing rows
 
     allStatuses.forEach(data => {
         const serverId = data.server.id;
@@ -3437,13 +3451,19 @@ function renderServerTable(allStatuses) {
         \`;
 
         // Clone the details row template
-        const detailsRow = detailsTemplate.content.cloneNode(true).querySelector('tr');
-        detailsRow.setAttribute('data-server-id', \`\${serverId}-details\`);
+        const detailsRowElement = detailsTemplate.content.cloneNode(true).querySelector('tr');
+        // The template has d-none by default. We will remove it if needed.
+        // Set a unique attribute for easier selection if needed, though direct reference is used here.
+        // detailsRowElement.setAttribute('data-detail-for', serverId); 
 
-
-        // Append both rows to the table body
         tableBody.appendChild(mainRow);
-        tableBody.appendChild(detailsRow);
+        tableBody.appendChild(detailsRowElement);
+
+        // 2. If this server was previously expanded, re-expand it and populate its details
+        if (expandedServerIds.has(serverId)) {
+            detailsRowElement.classList.remove('d-none');
+            populateDetailsRow(serverId, detailsRowElement); // Populate content
+        }
     });
 }
 
