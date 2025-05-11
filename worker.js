@@ -28,6 +28,7 @@ const D1_SCHEMAS = {
       memory TEXT,
       disk TEXT,
       network TEXT,
+      uptime INTEGER, -- Added for server uptime in seconds
       FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
     );
   `,
@@ -89,7 +90,9 @@ async function ensureTablesExist(db) {
     // For monitored_sites table - ensure last_notified_down_at exists if it was added later
     "ALTER TABLE monitored_sites ADD COLUMN last_notified_down_at INTEGER DEFAULT NULL",
     // For servers table - ensure last_notified_down_at exists if it was added later
-    "ALTER TABLE servers ADD COLUMN last_notified_down_at INTEGER DEFAULT NULL"
+    "ALTER TABLE servers ADD COLUMN last_notified_down_at INTEGER DEFAULT NULL",
+    // For metrics table - ensure uptime exists if it was added later
+    "ALTER TABLE metrics ADD COLUMN uptime INTEGER DEFAULT NULL"
     // NOTE: Columns 'enable_frequent_down_notifications' and 'last_frequent_notified_down_at'
     // are being removed from the schema. D1 does not easily support DROP COLUMN.
     // Existing columns will be ignored by the application logic.
@@ -268,7 +271,7 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
 
       // 从D1获取最新监控数据
       // 注意：metrics表存储JSON字符串，直接取出
-      const metricsStmt = env.DB.prepare('SELECT timestamp, cpu, memory, disk, network FROM metrics WHERE server_id = ?');
+      const metricsStmt = env.DB.prepare('SELECT timestamp, cpu, memory, disk, network, uptime FROM metrics WHERE server_id = ?');
       const metricsResult = await metricsStmt.bind(serverId).first();
 
       let metricsData = null;
@@ -280,12 +283,13 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
                 cpu: JSON.parse(metricsResult.cpu || '{}'),
                 memory: JSON.parse(metricsResult.memory || '{}'),
                 disk: JSON.parse(metricsResult.disk || '{}'),
-                network: JSON.parse(metricsResult.network || '{}')
+                network: JSON.parse(metricsResult.network || '{}'),
+                uptime: metricsResult.uptime // uptime is stored as INTEGER
             };
          } catch (parseError) {
              console.error(`Error parsing metrics JSON for server ${serverId}:`, parseError);
              // 可以选择返回错误或返回部分数据
-             metricsData = { timestamp: metricsResult.timestamp }; // 至少返回时间戳
+             metricsData = { timestamp: metricsResult.timestamp, uptime: metricsResult.uptime }; // 至少返回时间戳和uptime
          }
       }
 
@@ -321,6 +325,7 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
                memory TEXT,
                disk TEXT,
                network TEXT,
+               uptime INTEGER,
                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
              );
            `);
@@ -616,8 +621,8 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
       const reportData = await request.json();
 
       // 验证数据格式
-      if (!reportData.timestamp || !reportData.cpu || !reportData.memory || !reportData.disk || !reportData.network) {
-        return new Response(JSON.stringify({ error: 'Invalid data format' }), {
+      if (!reportData.timestamp || !reportData.cpu || !reportData.memory || !reportData.disk || !reportData.network || typeof reportData.uptime === 'undefined') {
+        return new Response(JSON.stringify({ error: 'Invalid data format, missing required fields including uptime' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
@@ -626,8 +631,8 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
       // 保存监控数据到D1 (使用REPLACE INTO进行插入或更新)
       // 将复杂的对象字符串化存储
       const metricsStmt = env.DB.prepare(`
-        REPLACE INTO metrics (server_id, timestamp, cpu, memory, disk, network) 
-        VALUES (?, ?, ?, ?, ?, ?)
+        REPLACE INTO metrics (server_id, timestamp, cpu, memory, disk, network, uptime) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       await metricsStmt.bind(
         serverId,
@@ -635,7 +640,8 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
         JSON.stringify(reportData.cpu),
         JSON.stringify(reportData.memory),
         JSON.stringify(reportData.disk),
-        JSON.stringify(reportData.network)
+        JSON.stringify(reportData.network),
+        reportData.uptime // uptime is an integer
       ).run();
 
       return new Response(JSON.stringify({ success: true }), {
@@ -663,6 +669,7 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
                memory TEXT,
                disk TEXT,
                network TEXT,
+               uptime INTEGER,
                FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
              );
            `);
@@ -2060,12 +2067,13 @@ function getIndexHtml() {
                         <th>下载</th>
                         <th>总上传</th>
                         <th>总下载</th>
+                        <th>运行时长</th>
                         <th>最后更新</th>
                     </tr>
                 </thead>
                 <tbody id="serverTableBody">
                     <tr>
-                        <td colspan="10" class="text-center">加载中...</td>
+                        <td colspan="11" class="text-center">加载中...</td>
                     </tr>
                 </tbody>
             </table>
@@ -2103,7 +2111,7 @@ function getIndexHtml() {
     <!-- Server Detailed row template (hidden by default) -->
     <template id="serverDetailsTemplate">
         <tr class="server-details-row d-none">
-            <td colspan="10">
+            <td colspan="11">
                 <div class="server-details-content">
                     <!-- Detailed metrics will be populated here by JavaScript -->
                 </div>
@@ -2432,16 +2440,17 @@ function getAdminHtml() {
                                 <th>ID</th>
                                 <th>名称</th>
                                 <th>描述</th>
-                                <th>API密钥</th>
                                 <th>状态</th>
                                 <th>最后更新</th>
+                                <th>API密钥</th>
+                                <th>VPS脚本</th>
                                 <!-- Removed <th>频繁通知 (10分钟)</th> -->
                                 <th>操作</th>
                             </tr>
                         </thead>
                         <tbody id="serverTableBody">
                             <tr>
-                                <td colspan="9" class="text-center">加载中...</td>
+                                <td colspan="10" class="text-center">加载中...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -3139,7 +3148,7 @@ async function loadAllServerStatuses() {
 
         if (servers.length === 0) {
             noServersAlert.classList.remove('d-none');
-            serverTableBody.innerHTML = '<tr><td colspan="10" class="text-center">No server data available. Please log in to the admin panel to add servers.</td></tr>';
+            serverTableBody.innerHTML = '<tr><td colspan="11" class="text-center">No server data available. Please log in to the admin panel to add servers.</td></tr>';
             // Remove any existing detail rows if the server list becomes empty
             removeAllDetailRows();
             return;
@@ -3168,7 +3177,7 @@ async function loadAllServerStatuses() {
     } catch (error) {
         console.error('Error loading server statuses:', error);
         const serverTableBody = document.getElementById('serverTableBody');
-        serverTableBody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Failed to load server data. Please refresh the page.</td></tr>';
+        serverTableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">Failed to load server data. Please refresh the page.</td></tr>';
          removeAllDetailRows();
     }
 }
@@ -3223,6 +3232,7 @@ function renderServerTable(allStatuses) {
         let downloadSpeed = '-';
         let totalUpload = '-';
         let totalDownload = '-';
+        let uptime = '-';
         let lastUpdate = '-';
 
         if (hasError) {
@@ -3245,6 +3255,7 @@ function renderServerTable(allStatuses) {
             downloadSpeed = formatNetworkSpeed(metrics.network.download_speed);
             totalUpload = formatDataSize(metrics.network.total_upload);
             totalDownload = formatDataSize(metrics.network.total_download);
+            uptime = metrics.uptime ? formatUptime(metrics.uptime) : '-';
             lastUpdate = lastReportTime.toLocaleString();
         }
 
@@ -3262,6 +3273,7 @@ function renderServerTable(allStatuses) {
             <td><span style="color: #000;">\${downloadSpeed}</span></td>
             <td><span style="color: #000;">\${totalUpload}</span></td>
             <td><span style="color: #000;">\${totalDownload}</span></td>
+            <td><span style="color: #000;">\${uptime}</span></td>
             <td><span style="color: #000;">\${lastUpdate}</span></td>
         \`;
 
@@ -3305,6 +3317,32 @@ function formatDataSize(bytes) {
     } else {
         return \`\${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(1)} TB\`;
     }
+}
+
+// Format uptime from seconds to a human-readable string
+function formatUptime(totalSeconds) {
+    if (typeof totalSeconds !== 'number' || isNaN(totalSeconds) || totalSeconds < 0) {
+        return '-';
+    }
+
+    const days = Math.floor(totalSeconds / (3600 * 24));
+    totalSeconds %= (3600 * 24);
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds %= 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+
+    let uptimeString = '';
+    if (days > 0) {
+        uptimeString += \`\${days}天 \`;
+    }
+    if (hours > 0) {
+        uptimeString += \`\${hours}小时 \`;
+    }
+    if (minutes > 0 || (days === 0 && hours === 0)) { // Show minutes if it's the only unit or if other units are zero
+        uptimeString += \`\${minutes}分钟\`;
+    }
+    
+    return uptimeString.trim() || '0分钟'; // Default to 0 minutes if string is empty
 }
 
 
@@ -3861,7 +3899,7 @@ function renderServerTable(servers) {
     
     if (servers.length === 0) {
         const row = document.createElement('tr');
-        row.innerHTML = '<td colspan="8" class="text-center">暂无服务器数据</td>';
+        row.innerHTML = '<td colspan="9" class="text-center">暂无服务器数据</td>'; // Updated colspan
         tableBody.appendChild(row);
         return;
     }
@@ -3902,13 +3940,18 @@ function renderServerTable(servers) {
             <td>\${server.id}</td>
             <td>\${server.name}</td>
             <td>\${server.description || '-'}</td>
+            <td>\${statusBadge}</td>
+            <td>\${lastUpdateText}</td>
             <td>
                 <button class="btn btn-sm btn-outline-secondary view-key-btn" data-id="\${server.id}">
                     <i class="bi bi-key"></i> 查看密钥
                 </button>
             </td>
-            <td>\${statusBadge}</td>
-            <td>\${lastUpdateText}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-info copy-vps-script-btn" data-id="\${server.id}" data-name="\${server.name}" title="复制VPS安装脚本">
+                    <i class="bi bi-clipboard-plus"></i> 复制脚本
+                </button>
+            </td>
             <!-- Removed frequent notification toggle column -->
             <td>
                 <div class="btn-group">
@@ -3956,7 +3999,67 @@ function renderServerTable(servers) {
         });
     });
 
+    document.querySelectorAll('.copy-vps-script-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const serverId = this.getAttribute('data-id');
+            const serverName = this.getAttribute('data-name');
+            copyVpsInstallScript(serverId, serverName, this);
+        });
+    });
+
     // Removed event listener for server-frequent-notify-toggle as it's deleted from HTML
+}
+
+
+// Function to copy VPS installation script
+async function copyVpsInstallScript(serverId, serverName, buttonElement) {
+    const originalButtonHtml = buttonElement.innerHTML;
+    buttonElement.disabled = true;
+    buttonElement.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 获取中...';
+
+    try {
+        const apiKeyResponse = await fetch(\`/api/admin/servers/\${serverId}/key\`, {
+            headers: getAuthHeaders()
+        });
+
+        if (!apiKeyResponse.ok) {
+            const errorData = await apiKeyResponse.json().catch(() => ({}));
+            throw new Error(errorData.message || '获取API密钥失败');
+        }
+        const apiKeyData = await apiKeyResponse.json();
+        const apiKey = apiKeyData.api_key;
+
+        if (!apiKey) {
+            throw new Error('未能获取到API密钥');
+        }
+
+        const workerUrl = window.location.origin;
+        // The base script command provided by the user
+        const baseScriptUrl = "https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh";
+        const scriptCommand = \`wget \${baseScriptUrl} -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k \${apiKey} -s \${serverId} -u \${workerUrl}\`;
+
+        await navigator.clipboard.writeText(scriptCommand);
+        
+        buttonElement.innerHTML = '<i class="bi bi-check-lg"></i> 已复制!';
+        buttonElement.classList.remove('btn-outline-info');
+        buttonElement.classList.add('btn-success');
+        
+        showAlert('success', \`服务器 "\${serverName}" 的安装脚本已复制到剪贴板。\`, 'serverAlert');
+
+    } catch (error) {
+        console.error('复制VPS安装脚本错误:', error);
+        showAlert('danger', \`复制脚本失败: \${error.message}\`, 'serverAlert');
+        buttonElement.innerHTML = '<i class="bi bi-x-lg"></i> 复制失败';
+        buttonElement.classList.remove('btn-outline-info');
+        buttonElement.classList.add('btn-danger');
+    } finally {
+        setTimeout(() => {
+            buttonElement.disabled = false;
+            buttonElement.innerHTML = originalButtonHtml;
+            buttonElement.classList.remove('btn-success', 'btn-danger');
+            buttonElement.classList.add('btn-outline-info');
+        }, 3000); // Revert button state after 3 seconds
+    }
 }
 
 // 移动服务器顺序
