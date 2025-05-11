@@ -14,6 +14,7 @@ NC='\033[0m' # 无颜色
 API_KEY=""
 SERVER_ID=""
 WORKER_URL=""
+INTERVAL="60" # 默认上报间隔 (秒)
 INSTALL_DIR="/opt/vps-monitor"
 SERVICE_NAME="vps-monitor"
 CONFIG_FILE="$INSTALL_DIR/config.conf"
@@ -55,6 +56,7 @@ save_config() {
 API_KEY="$API_KEY"
 SERVER_ID="$SERVER_ID"
 WORKER_URL="$WORKER_URL"
+INTERVAL="$INTERVAL"
 INSTALL_DIR="$INSTALL_DIR"
 SERVICE_NAME="$SERVICE_NAME"
 EOF
@@ -94,7 +96,7 @@ create_monitor_script() {
 API_KEY="__API_KEY__"
 SERVER_ID="__SERVER_ID__"
 WORKER_URL="__WORKER_URL__"
-INTERVAL=60  # 上报间隔（秒）
+INTERVAL="__INTERVAL__"  # 上报间隔（秒）
 LOG_FILE="/var/log/vps-monitor.log"
 
 # 日志函数
@@ -207,6 +209,7 @@ EOF
     sed -i "s|__API_KEY__|$API_KEY|g" "$INSTALL_DIR/monitor.sh"
     sed -i "s|__SERVER_ID__|$SERVER_ID|g" "$INSTALL_DIR/monitor.sh"
     sed -i "s|__WORKER_URL__|$WORKER_URL|g" "$INSTALL_DIR/monitor.sh"
+    sed -i "s|__INTERVAL__|$INTERVAL|g" "$INSTALL_DIR/monitor.sh"
 
     # 设置执行权限
     chmod +x "$INSTALL_DIR/monitor.sh"
@@ -278,6 +281,15 @@ install_monitor() {
                 echo -e "${RED}Worker URL不能为空${NC}"
             fi
         done
+        
+        # 获取上报间隔
+        local temp_interval
+        read -p "上报间隔 (秒) [默认: $INTERVAL]: " temp_interval
+        if [[ "$temp_interval" =~ ^[0-9]+$ ]] && [ "$temp_interval" -gt 0 ]; then
+            INTERVAL="$temp_interval"
+        else
+            echo -e "${YELLOW}输入无效或为空，使用默认值: $INTERVAL 秒${NC}"
+        fi
     fi
     
     # 创建安装目录
@@ -341,6 +353,16 @@ uninstall_monitor() {
     # 删除安装目录
     echo -e "${YELLOW}正在删除安装文件...${NC}"
     rm -rf "$INSTALL_DIR"
+    
+    # 删除日志文件
+    echo -e "${YELLOW}正在删除日志文件...${NC}"
+    rm -f "/var/log/vps-monitor.log"
+
+    # 重置内存中的配置变量，以便在同一会话中重新安装时提示
+    API_KEY=""
+    SERVER_ID=""
+    WORKER_URL=""
+    INTERVAL="60" # 恢复为脚本顶部的默认值
     
     echo -e "${GREEN}VPS监控系统已成功卸载！${NC}"
 }
@@ -464,6 +486,7 @@ change_config() {
     local new_api_key=""
     local new_server_id=""
     local new_worker_url=""
+    local new_interval=""
 
     # 获取新API密钥
     read -p "新的API密钥 [当前: ${API_KEY}]: " new_api_key
@@ -483,10 +506,20 @@ change_config() {
         new_worker_url="$WORKER_URL" # 保留旧值
     fi
 
+    # 获取新上报间隔
+    read -p "新的上报间隔 (秒) [当前: ${INTERVAL}]: " new_interval
+    if [[ -n "$new_interval" && "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -gt 0 ]; then
+        INTERVAL="$new_interval"
+    elif [ -n "$new_interval" ]; then # 如果输入了但无效
+        echo -e "${RED}无效的上报间隔输入，保留当前值: ${INTERVAL} 秒${NC}"
+    fi
+    # 如果留空，INTERVAL 保持不变
+
     # 更新配置变量
     API_KEY="$new_api_key"
     SERVER_ID="$new_server_id"
     WORKER_URL="$new_worker_url"
+    # INTERVAL 已经直接更新了
 
     # 保存配置
     echo -e "${YELLOW}正在保存配置...${NC}"
@@ -556,6 +589,15 @@ parse_args() {
                 INSTALL_DIR="$2"
                 shift 2
                 ;;
+            -t|--interval)
+                if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ]; then
+                    INTERVAL="$2"
+                else
+                    echo -e "${RED}错误: 无效的上报间隔 '$2'。必须是正整数。${NC}"
+                    exit 1
+                fi
+                shift 2
+                ;;
             -i|--install)
                 DIRECT_INSTALL=1
                 shift
@@ -581,14 +623,15 @@ show_help() {
     echo "  -k, --key KEY        API密钥"
     echo "  -s, --server ID      服务器ID"
     echo "  -u, --url URL        Worker URL"
+    echo "  -t, --interval SECS  上报间隔 (秒, 默认: 60)"
     echo "  -d, --dir DIR        安装目录 (默认: /opt/vps-monitor)"
     echo "  -i, --install        直接安装，不显示菜单"
     echo "  -h, --help           显示此帮助信息"
     echo ""
     echo "示例:"
     echo "  $0                   显示交互式菜单"
-    echo "  $0 -i -k API_KEY -s SERVER_ID -u https://example.workers.dev"
-    echo "                       直接安装监控系统"
+    echo "  $0 -i -k API_KEY -s SERVER_ID -u https://example.workers.dev -t 300"
+    echo "                       直接安装监控系统，上报间隔为300秒"
 }
 
 # 主函数
