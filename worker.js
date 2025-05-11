@@ -68,6 +68,14 @@ const D1_SCHEMAS = {
     );
     -- Initialize with a single row if it doesn't exist
     INSERT OR IGNORE INTO telegram_config (id, bot_token, chat_id, enable_notifications, updated_at) VALUES (1, NULL, NULL, 0, NULL);
+  `,
+  app_config: `
+    CREATE TABLE IF NOT EXISTS app_config (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+    -- Default VPS report interval: 60 seconds
+    INSERT OR IGNORE INTO app_config (key, value) VALUES ('vps_report_interval_seconds', '60');
   `
 };
 
@@ -1171,6 +1179,62 @@ async function handleApiRequest(request, env, ctx) { // Added ctx
 
   // --- End Website Monitoring API ---
 
+  // --- App Config Settings API (for VPS report interval) ---
+  // GET /api/admin/settings/vps-report-interval
+  if (path === '/api/admin/settings/vps-report-interval' && method === 'GET') {
+    try {
+      const stmt = env.DB.prepare('SELECT value FROM app_config WHERE key = ?');
+      const result = await stmt.bind('vps_report_interval_seconds').first();
+      const interval = result ? parseInt(result.value, 10) : 60; // Default to 60 if not found
+
+      return new Response(JSON.stringify({ interval: interval }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    } catch (error) {
+      console.error("Get VPS report interval error:", error);
+      // Attempt to create table if it doesn't exist
+      if (error.message.includes('no such table')) {
+        try {
+          await env.DB.exec(D1_SCHEMAS.app_config);
+          return new Response(JSON.stringify({ interval: 60 }), { // Return default
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        } catch (createError) {
+          console.error("Failed to create app_config table:", createError);
+        }
+      }
+      return new Response(JSON.stringify({ error: 'Internal server error', message: error.message }), {
+        status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+  }
+
+  // POST /api/admin/settings/vps-report-interval
+  if (path === '/api/admin/settings/vps-report-interval' && method === 'POST') {
+    try {
+      const { interval } = await request.json();
+      if (typeof interval !== 'number' || interval <= 0 || !Number.isInteger(interval)) {
+        return new Response(JSON.stringify({ error: 'Invalid interval value. Must be a positive integer (seconds).' }), {
+          status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      const stmt = env.DB.prepare('REPLACE INTO app_config (key, value) VALUES (?, ?)');
+      await stmt.bind('vps_report_interval_seconds', interval.toString()).run();
+
+      return new Response(JSON.stringify({ success: true, interval: interval }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    } catch (error) {
+      console.error("Update VPS report interval error:", error);
+      return new Response(JSON.stringify({ error: 'Internal server error', message: error.message }), {
+        status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+  }
+  // --- End App Config Settings API ---
+
+
   // --- Telegram Settings API ---
   if (path === '/api/admin/telegram-settings' && method === 'GET') {
     try {
@@ -1557,8 +1621,33 @@ function isValidHttpUrl(string) {
 // --- Original Handlers (Install Script, Frontend) ---
 
 // 处理安装脚本
-function handleInstallScript(request, url) {
+async function handleInstallScript(request, url, env) { // Added env
   const baseUrl = url.origin;
+  let vpsReportInterval = '60'; // Default
+
+  try {
+    // Ensure app_config table exists before trying to read from it.
+    // This might be redundant if ensureTablesExist runs reliably on every fetch,
+    // but good for robustness within this specific function.
+    // Check if D1_SCHEMAS.app_config is defined before executing
+    if (D1_SCHEMAS && D1_SCHEMAS.app_config) {
+        await env.DB.exec(D1_SCHEMAS.app_config);
+    } else {
+        console.warn("D1_SCHEMAS.app_config is not defined. Skipping creation in handleInstallScript.");
+    }
+    
+    const stmt = env.DB.prepare('SELECT value FROM app_config WHERE key = ?');
+    const result = await stmt.bind('vps_report_interval_seconds').first();
+    if (result && result.value) {
+      const parsedInterval = parseInt(result.value, 10);
+      if (!isNaN(parsedInterval) && parsedInterval > 0) {
+        vpsReportInterval = parsedInterval.toString();
+      }
+    }
+  } catch (e) {
+    console.error("Error fetching VPS report interval for install script:", e);
+    // Use default if error, or if table/value doesn't exist yet
+  }
   
   const script = `#!/bin/bash
 # VPS监控脚本 - 安装程序
@@ -1625,7 +1714,7 @@ cat > "$INSTALL_DIR/monitor.sh" << 'EOF'
 API_KEY="__API_KEY__"
 SERVER_ID="__SERVER_ID__"
 WORKER_URL="__WORKER_URL__"
-INTERVAL=60  # 上报间隔（秒）
+INTERVAL=${vpsReportInterval}  # 上报间隔（秒）
 
 # 日志函数
 log() {
@@ -1753,6 +1842,8 @@ EOF
 sed -i "s|__API_KEY__|$API_KEY|g" "$INSTALL_DIR/monitor.sh"
 sed -i "s|__SERVER_ID__|$SERVER_ID|g" "$INSTALL_DIR/monitor.sh"
 sed -i "s|__WORKER_URL__|$WORKER_URL|g" "$INSTALL_DIR/monitor.sh"
+# This line ensures the INTERVAL placeholder is replaced with the fetched value.
+sed -i "s|^INTERVAL=.*|INTERVAL=${vpsReportInterval}|g" "$INSTALL_DIR/monitor.sh"
 
 # 设置执行权限
 chmod +x "$INSTALL_DIR/monitor.sh"
@@ -2421,15 +2512,29 @@ function getAdminHtml() {
     </nav>
 
     <div class="container mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>服务器管理</h2>
+        <div class="d-flex align-items-center mb-4"> <!-- Main flex container for the header row -->
+            <h2 class="mb-0 me-3">服务器管理</h2> <!-- Server Management Heading -->
+
+            <!-- VPS Data Update Frequency Form -->
+            <form id="globalSettingsFormPartial" class="row gx-2 gy-2 align-items-center me-auto"> <!-- me-auto pushes Add Server button to the right -->
+                <div class="col-auto">
+                     <label for="vpsReportInterval" class="col-form-label col-form-label-sm">VPS数据更新频率 (秒):</label>
+                </div>
+                <div class="col-auto">
+                    <input type="number" class="form-control form-control-sm" id="vpsReportInterval" placeholder="例如: 60" min="1" style="width: 100px;">
+                </div>
+                <div class="col-auto">
+                    <button type="button" id="saveVpsReportIntervalBtn" class="btn btn-info btn-sm">保存频率</button>
+                </div>
+            </form>
+
+            <!-- Add Server Button -->
             <button id="addServerBtn" class="btn btn-primary">
                 <i class="bi bi-plus-circle"></i> 添加服务器
             </button>
         </div>
-
+        <!-- Removed globalSettingsAlert as serverAlert will be used -->
         <div id="serverAlert" class="alert d-none"></div>
-
         <div class="card">
             <div class="card-body">
                 <div class="table-responsive">
@@ -2528,6 +2633,10 @@ function getAdminHtml() {
         </div>
     </div>
     <!-- End Telegram Notification Settings Section -->
+
+    <!-- Global Settings Section (Now integrated above Server Management List) -->
+    <!-- The form is now part of the header for Server Management -->
+    <!-- End Global Settings Section -->
 
 
     <!-- 服务器模态框 -->
@@ -2944,24 +3053,74 @@ function getMainJs() {
   return `// main.js - 首页面的JavaScript逻辑
 
 // Global variables
-let updateInterval = null;
+let vpsUpdateInterval = null;
+let siteUpdateInterval = null;
 let serverDataCache = {}; // Cache server data to avoid re-fetching for details
+const DEFAULT_VPS_REFRESH_INTERVAL_MS = 60000; // Default to 60 seconds for VPS data if backend setting fails
+const DEFAULT_SITE_REFRESH_INTERVAL_MS = 60000; // Default to 60 seconds for Site data
+
+// Function to fetch VPS refresh interval and start periodic VPS data updates
+async function initializeVpsDataUpdates() {
+    let vpsRefreshIntervalMs = DEFAULT_VPS_REFRESH_INTERVAL_MS;
+    try {
+        const response = await fetch('/api/admin/settings/vps-report-interval'); // This API is public for GET
+        if (response.ok) {
+            const data = await response.json();
+            if (data && typeof data.interval === 'number' && data.interval > 0) {
+                vpsRefreshIntervalMs = data.interval * 1000; // Convert seconds to milliseconds
+                console.log(\`Using backend-defined VPS refresh interval: \${data.interval}s\`);
+            } else {
+                console.warn('Invalid VPS interval from backend, using default.');
+            }
+        } else {
+            console.warn('Failed to fetch VPS refresh interval from backend, using default.');
+        }
+    } catch (error) {
+        console.error('Error fetching VPS refresh interval, using default:', error);
+    }
+
+    // Clear existing interval if any
+    if (vpsUpdateInterval) {
+        clearInterval(vpsUpdateInterval);
+    }
+
+    // Set up new periodic updates for VPS data ONLY
+    vpsUpdateInterval = setInterval(() => {
+        loadAllServerStatuses();
+    }, vpsRefreshIntervalMs);
+
+    console.log(\`VPS data will refresh every \${vpsRefreshIntervalMs / 1000} seconds.\`);
+}
+
+// Function to start periodic site status updates
+function initializeSiteDataUpdates() {
+    const siteRefreshIntervalMs = DEFAULT_SITE_REFRESH_INTERVAL_MS; // Using a fixed interval for sites
+
+    // Clear existing interval if any
+    if (siteUpdateInterval) {
+        clearInterval(siteUpdateInterval);
+    }
+
+    // Set up new periodic updates for site statuses ONLY
+    siteUpdateInterval = setInterval(() => {
+        loadAllSiteStatuses();
+    }, siteRefreshIntervalMs);
+
+    console.log(\`Site status data will refresh every \${siteRefreshIntervalMs / 1000} seconds.\`);
+}
 
 // Execute after the page loads
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize theme
     initializeTheme();
 
-    // Load all server statuses
+    // Load initial data
     loadAllServerStatuses();
-    // Load website statuses
     loadAllSiteStatuses();
 
-    // Set up periodic updates
-    updateInterval = setInterval(() => {
-        loadAllServerStatuses();
-        loadAllSiteStatuses();
-    }, 60000); // Update every 60 seconds
+    // Initialize periodic updates separately
+    initializeVpsDataUpdates();
+    initializeSiteDataUpdates();
 
     // Add click event listener to the table body for row expansion
     document.getElementById('serverTableBody').addEventListener('click', handleRowClick);
@@ -3702,6 +3861,8 @@ document.addEventListener('DOMContentLoaded', function() {
     loadSiteList();
     // 加载Telegram设置
     loadTelegramSettings();
+    // 加载全局设置 (VPS Report Interval) - will use serverAlert for notifications
+    loadGlobalSettings();
 });
 
 // 检查登录状态
@@ -3835,6 +3996,11 @@ function initEventListeners() {
     // 保存Telegram设置按钮
     document.getElementById('saveTelegramSettingsBtn').addEventListener('click', function() {
         saveTelegramSettings();
+    });
+
+    // Global Settings Event Listener
+    document.getElementById('saveVpsReportIntervalBtn').addEventListener('click', function() {
+        saveVpsReportInterval();
     });
 }
 
@@ -4033,11 +4199,28 @@ async function copyVpsInstallScript(serverId, serverName, buttonElement) {
             throw new Error('未能获取到API密钥');
         }
 
+        // Fetch the current global VPS report interval
+        let vpsReportInterval = 60; // Default if fetch fails
+        try {
+            const intervalResponse = await fetch('/api/admin/settings/vps-report-interval', { headers: getAuthHeaders() });
+            if (intervalResponse.ok) {
+                const intervalData = await intervalResponse.json();
+                if (intervalData && typeof intervalData.interval === 'number' && intervalData.interval > 0) {
+                    vpsReportInterval = intervalData.interval;
+                }
+            } else {
+                console.warn('Failed to fetch VPS report interval for script, using default.');
+            }
+        } catch (e) {
+            console.warn('Error fetching VPS report interval for script, using default:', e);
+        }
+        
         const workerUrl = window.location.origin;
         // The base script command provided by the user
         const baseScriptUrl = "https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh";
-        const scriptCommand = \`wget \${baseScriptUrl} -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k \${apiKey} -s \${serverId} -u \${workerUrl}\`;
-
+        // Include the fetched interval in the script command
+        const scriptCommand = \`wget \${baseScriptUrl} -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k \${apiKey} -s \${serverId} -u \${workerUrl} --interval \${vpsReportInterval}\`;
+        
         await navigator.clipboard.writeText(scriptCommand);
         
         buttonElement.innerHTML = '<i class="bi bi-check-lg"></i> 已复制!';
@@ -4702,7 +4885,62 @@ async function saveTelegramSettings() {
 
     } catch (error) {
         console.error('保存Telegram设置错误:', error);
-        showAlert('danger', \`保存Telegram设置失败: \${error.message}\`, 'telegramSettingsAlert');
+    showAlert('danger', \`保存Telegram设置失败: \${error.message}\`, 'telegramSettingsAlert');
+    }
+}
+
+// --- Global Settings Functions (VPS Report Interval) ---
+async function loadGlobalSettings() {
+    try {
+        const response = await fetch('/api/admin/settings/vps-report-interval', {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || '获取VPS报告间隔失败');
+        }
+        const settings = await response.json();
+        if (settings && typeof settings.interval === 'number') {
+            document.getElementById('vpsReportInterval').value = settings.interval;
+        } else {
+            document.getElementById('vpsReportInterval').value = 60; // Default if not set
+        }
+    } catch (error) {
+        console.error('加载VPS报告间隔错误:', error);
+        showAlert('danger', \`加载VPS报告间隔失败: \${error.message}\`, 'serverAlert'); // Changed to serverAlert
+        document.getElementById('vpsReportInterval').value = 60; // Default on error
+    }
+}
+
+async function saveVpsReportInterval() {
+    const intervalInput = document.getElementById('vpsReportInterval');
+    const interval = parseInt(intervalInput.value, 10);
+
+    if (isNaN(interval) || interval < 1) { // Changed to interval < 1
+        showAlert('warning', 'VPS报告间隔必须是一个大于或等于1的数字。', 'serverAlert'); // Changed to serverAlert and message
+        return;
+    }
+    // Removed warning for interval < 10
+
+    try {
+        const response = await fetch('/api/admin/settings/vps-report-interval', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ interval: interval })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || '保存VPS报告间隔失败');
+        }
+        
+        await response.json(); // Consume response body
+        showAlert('success', 'VPS数据更新频率已成功保存。', 'serverAlert'); // Changed to serverAlert
+        // Optionally, reload the value to confirm, though API returns it
+        // loadGlobalSettings(); 
+    } catch (error) {
+        console.error('保存VPS报告间隔错误:', error);
+        showAlert('danger', \`保存VPS报告间隔失败: \${error.message}\`, 'serverAlert'); // Changed to serverAlert
     }
 }
 `;
