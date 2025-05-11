@@ -152,6 +152,12 @@ get_network_usage() {
     echo "{\"upload_speed\":$upload_speed,\"download_speed\":$download_speed,\"total_upload\":$tx_bytes,\"total_download\":$rx_bytes}"
 }
 
+# 获取运行时长
+get_uptime() {
+    uptime_seconds=$(cut -d. -f1 /proc/uptime)
+    echo "$uptime_seconds"
+}
+
 # 上报数据
 report_metrics() {
     timestamp=$(date +%s)
@@ -159,8 +165,9 @@ report_metrics() {
     memory=$(get_memory_usage)
     disk=$(get_disk_usage)
     network=$(get_network_usage)
+    uptime=$(get_uptime)
     
-    data="{\"timestamp\":$timestamp,\"cpu\":$cpu,\"memory\":$memory,\"disk\":$disk,\"network\":$network}"
+    data="{\"timestamp\":$timestamp,\"cpu\":$cpu,\"memory\":$memory,\"disk\":$disk,\"network\":$network,\"uptime\":$uptime}"
     
     log "正在上报数据..."
     
