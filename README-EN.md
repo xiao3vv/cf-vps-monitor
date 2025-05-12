@@ -5,12 +5,11 @@ Panel Demo: https://vps-monitor.abo-vendor289.workers.dev/
 
 Frontend:
 
-![image](https://github.com/user-attachments/assets/382019b3-93de-4a6a-9f3f-83410fb89bd4)
-![image](https://github.com/user-attachments/assets/7a8a37ee-3be1-4bf4-952f-cd200efb50f4)
+![image](https://github.com/user-attachments/assets/ff4e8ac1-eb33-4776-89ca-ee026df536f5)
 
 Backend:
 
-![image](https://github.com/user-attachments/assets/1aa00797-0999-4a23-90d9-18c737fa7d77)
+![image](https://github.com/user-attachments/assets/c63ede1c-2299-4d3e-9d2a-e5806dc6473b)
 
 VPS Side:
 
