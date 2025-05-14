@@ -134,17 +134,22 @@ Worker 需要访问你之前创建的 D1 数据库。
 
 Agent 是一个需要在你的 VPS 上运行的脚本，用于收集状态信息并发送回面板。
 
-下载脚本并运行：
+有两种方式安装Agent脚本：
+
+第一种是直接从后台复制带有参数的命令一键安装（推荐）
+![image](https://github.com/user-attachments/assets/11e3c3bf-84c1-41ec-ae67-310c566830b3)
+
+第二种是：下载脚本并运行：
 ```
 wget https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh
 ```
-或者：
+或者下载脚本并运行：
 ```
 curl -O https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh
 ```
-*   安装需要 `API密钥` `服务器ID` 和 你的 `worker网址`
-*   可以在后台点击 `查看密钥` 来获取上述三个参数
-*   按照提示输入安装完成后，Agent 会开始定期(60s)向你的面板发送数据。你应该能在面板上看到对应服务器的状态更新。
+*   安装需要 `API密钥` `服务器ID`  你的 `worker网址` 和`上报间隔`(和后台的更新频率设置最好保持一致)`
+*   可以在后台点击 `查看密钥` 来获取上述前三个参数
+*   按照提示输入安装完成后，Agent 会开始定期向你的面板发送数据。你应该能在面板上看到对应服务器的状态更新。
 
 ### 4. Agent 管理
 
