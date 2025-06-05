@@ -71,62 +71,123 @@ detect_system() {
         return
     fi
 
+    # 检测容器环境
+    if [[ -f /.dockerenv ]] || [[ -n "${container:-}" ]]; then
+        CONTAINER_ENV="true"
+        print_message "$YELLOW" "检测到容器环境"
+    else
+        CONTAINER_ENV="false"
+    fi
+
+    # 多种方式检测Linux发行版
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         OS=$NAME
         VER=$VERSION_ID
+        DISTRO_ID=$ID
+    elif [[ -f /etc/lsb-release ]]; then
+        . /etc/lsb-release
+        OS=$DISTRIB_ID
+        VER=$DISTRIB_RELEASE
+        DISTRO_ID=$(echo "$OS" | tr '[:upper:]' '[:lower:]')
     elif command_exists lsb_release; then
         OS=$(lsb_release -si)
         VER=$(lsb_release -sr)
+        DISTRO_ID=$(echo "$OS" | tr '[:upper:]' '[:lower:]')
     elif [[ -f /etc/redhat-release ]]; then
-        OS="Red Hat Enterprise Linux"
+        OS=$(cat /etc/redhat-release | sed 's/ release.*//')
         VER=$(cat /etc/redhat-release | sed 's/.*release //' | sed 's/ .*//')
+        DISTRO_ID="rhel"
+    elif [[ -f /etc/centos-release ]]; then
+        OS="CentOS"
+        VER=$(cat /etc/centos-release | sed 's/.*release //' | sed 's/ .*//')
+        DISTRO_ID="centos"
+    elif [[ -f /etc/debian_version ]]; then
+        OS="Debian"
+        VER=$(cat /etc/debian_version)
+        DISTRO_ID="debian"
+    elif [[ -f /etc/alpine-release ]]; then
+        OS="Alpine Linux"
+        VER=$(cat /etc/alpine-release)
+        DISTRO_ID="alpine"
+    elif [[ -f /etc/arch-release ]]; then
+        OS="Arch Linux"
+        VER="rolling"
+        DISTRO_ID="arch"
     else
+        OS="Linux"
         VER=$(uname -r)
+        DISTRO_ID="unknown"
     fi
 
     print_message "$CYAN" "检测到系统: $OS $VER"
+    if [[ "$CONTAINER_ENV" == "true" ]]; then
+        print_message "$YELLOW" "运行在容器环境中"
+    fi
 
-    # 确保OS变量在全局可用
-    export OS
+    # 确保变量在全局可用
+    export OS VER DISTRO_ID CONTAINER_ENV
 }
 
 # 检测包管理器
 detect_package_manager() {
+    PKG_MANAGER=""
+    PKG_INSTALL=""
+    PKG_UPDATE=""
+
     if [[ "$OS" == "FreeBSD" ]]; then
         if command_exists pkg; then
             PKG_MANAGER="pkg"
             PKG_INSTALL="pkg install -y"
             PKG_UPDATE="pkg update"
-        else
-            PKG_MANAGER=""
         fi
-    elif command_exists apt-get; then
-        PKG_MANAGER="apt-get"
-        PKG_INSTALL="apt-get install -y"
-        PKG_UPDATE="apt-get update"
-    elif command_exists yum; then
-        PKG_MANAGER="yum"
-        PKG_INSTALL="yum install -y"
-        PKG_UPDATE="yum update -y"
-    elif command_exists dnf; then
-        PKG_MANAGER="dnf"
-        PKG_INSTALL="dnf install -y"
-        PKG_UPDATE="dnf update -y"
-    elif command_exists pacman; then
-        PKG_MANAGER="pacman"
-        PKG_INSTALL="pacman -S --noconfirm"
-        PKG_UPDATE="pacman -Sy"
-    elif command_exists zypper; then
-        PKG_MANAGER="zypper"
-        PKG_INSTALL="zypper install -y"
-        PKG_UPDATE="zypper refresh"
-    elif command_exists apk; then
-        PKG_MANAGER="apk"
-        PKG_INSTALL="apk add"
-        PKG_UPDATE="apk update"
     else
-        PKG_MANAGER=""
+        # 按优先级检测包管理器
+        if command_exists apt-get; then
+            PKG_MANAGER="apt-get"
+            PKG_INSTALL="apt-get install -y"
+            PKG_UPDATE="apt-get update"
+        elif command_exists apt; then
+            PKG_MANAGER="apt"
+            PKG_INSTALL="apt install -y"
+            PKG_UPDATE="apt update"
+        elif command_exists dnf; then
+            PKG_MANAGER="dnf"
+            PKG_INSTALL="dnf install -y"
+            PKG_UPDATE="dnf update -y"
+        elif command_exists yum; then
+            PKG_MANAGER="yum"
+            PKG_INSTALL="yum install -y"
+            PKG_UPDATE="yum update -y"
+        elif command_exists zypper; then
+            PKG_MANAGER="zypper"
+            PKG_INSTALL="zypper install -y"
+            PKG_UPDATE="zypper refresh"
+        elif command_exists pacman; then
+            PKG_MANAGER="pacman"
+            PKG_INSTALL="pacman -S --noconfirm"
+            PKG_UPDATE="pacman -Sy"
+        elif command_exists apk; then
+            PKG_MANAGER="apk"
+            PKG_INSTALL="apk add"
+            PKG_UPDATE="apk update"
+        elif command_exists emerge; then
+            PKG_MANAGER="emerge"
+            PKG_INSTALL="emerge"
+            PKG_UPDATE="emerge --sync"
+        elif command_exists xbps-install; then
+            PKG_MANAGER="xbps"
+            PKG_INSTALL="xbps-install -y"
+            PKG_UPDATE="xbps-install -S"
+        elif command_exists swupd; then
+            PKG_MANAGER="swupd"
+            PKG_INSTALL="swupd bundle-add"
+            PKG_UPDATE="swupd update"
+        elif command_exists nix-env; then
+            PKG_MANAGER="nix"
+            PKG_INSTALL="nix-env -i"
+            PKG_UPDATE="nix-channel --update"
+        fi
     fi
 
     if [[ -n "$PKG_MANAGER" ]]; then
@@ -134,6 +195,9 @@ detect_package_manager() {
     else
         print_message "$YELLOW" "警告: 未检测到支持的包管理器，将尝试手动安装依赖"
     fi
+
+    # 导出变量供其他函数使用
+    export PKG_MANAGER PKG_INSTALL PKG_UPDATE
 }
 
 # 检查并安装依赖（无需root权限的方法）
@@ -152,61 +216,291 @@ install_dependencies() {
     fi
     
     # 检查可选的命令
+    local optional_missing=()
     if ! command_exists ifstat; then
-        print_message "$YELLOW" "警告: ifstat未安装，网络监控功能将受限"
+        optional_missing+=("ifstat")
     fi
-    
+    if ! command_exists jq; then
+        optional_missing+=("jq")
+    fi
+
+    # 报告可选依赖状态
+    if [[ ${#optional_missing[@]} -gt 0 ]]; then
+        print_message "$YELLOW" "可选依赖未安装: ${optional_missing[*]}"
+        print_message "$YELLOW" "这些依赖缺失不会影响基本功能，但可能限制某些特性"
+    fi
+
     if [[ ${#missing_deps[@]} -eq 0 ]]; then
         print_message "$GREEN" "所有必需依赖已安装"
         return 0
     fi
-    
-    print_message "$YELLOW" "缺少依赖: ${missing_deps[*]}"
-    
-    # 尝试使用包管理器安装（如果有sudo权限）
-    if [[ -n "$PKG_MANAGER" ]] && command_exists sudo; then
-        print_message "$BLUE" "尝试使用sudo安装依赖..."
-        if sudo -n true 2>/dev/null; then
-            for dep in "${missing_deps[@]}"; do
+
+    print_message "$YELLOW" "缺少必需依赖: ${missing_deps[*]}"
+
+    # 根据不同发行版调整包名
+    local adjusted_deps=()
+    for dep in "${missing_deps[@]}"; do
+        case "$dep" in
+            "bc")
+                if [[ "$DISTRO_ID" == "alpine" ]]; then
+                    adjusted_deps+=("bc")
+                else
+                    adjusted_deps+=("bc")
+                fi
+                ;;
+            "curl")
+                adjusted_deps+=("curl")
+                ;;
+            *)
+                adjusted_deps+=("$dep")
+                ;;
+        esac
+    done
+
+    # 尝试安装依赖
+    if [[ -n "$PKG_MANAGER" ]]; then
+        if command_exists sudo && sudo -n true 2>/dev/null; then
+            print_message "$BLUE" "尝试使用sudo安装依赖..."
+            # 先更新包列表（对于某些包管理器）
+            if [[ "$PKG_MANAGER" == "apt-get" ]] || [[ "$PKG_MANAGER" == "apt" ]]; then
+                sudo $PKG_UPDATE
+            fi
+
+            for dep in "${adjusted_deps[@]}"; do
                 print_message "$BLUE" "安装 $dep..."
                 if ! sudo $PKG_INSTALL "$dep"; then
-                    print_message "$YELLOW" "警告: 无法安装 $dep，请手动安装"
+                    print_message "$YELLOW" "警告: 无法安装 $dep"
                 fi
             done
         else
-            print_message "$YELLOW" "需要sudo权限安装依赖，或请手动安装: ${missing_deps[*]}"
+            print_message "$YELLOW" "需要sudo权限安装依赖，请手动执行:"
+            print_message "$CYAN" "  sudo $PKG_INSTALL ${adjusted_deps[*]}"
         fi
     else
-        print_message "$YELLOW" "请手动安装以下依赖: ${missing_deps[*]}"
-        print_message "$CYAN" "安装命令示例:"
-        if [[ -n "$PKG_MANAGER" ]]; then
-            print_message "$CYAN" "  sudo $PKG_INSTALL ${missing_deps[*]}"
-        fi
+        print_message "$YELLOW" "未检测到包管理器，请手动安装依赖"
+        print_message "$CYAN" "常见安装命令:"
+        print_message "$CYAN" "  Ubuntu/Debian: sudo apt-get install ${adjusted_deps[*]}"
+        print_message "$CYAN" "  CentOS/RHEL: sudo yum install ${adjusted_deps[*]}"
+        print_message "$CYAN" "  Fedora: sudo dnf install ${adjusted_deps[*]}"
+        print_message "$CYAN" "  Alpine: sudo apk add ${adjusted_deps[*]}"
     fi
-    
+
     # 再次检查关键依赖
     if ! command_exists curl; then
-        error_exit "curl是必需的依赖，请先安装curl"
+        print_message "$RED" "curl是必需的依赖，正在尝试替代方案..."
+
+        # 尝试使用wget作为curl的替代
+        if command_exists wget; then
+            print_message "$YELLOW" "将使用wget作为curl的替代"
+            # 创建curl的wrapper函数
+            create_curl_wrapper
+        else
+            error_exit "curl和wget都不可用，请先安装其中一个后重试"
+        fi
     fi
-    
+
     if ! command_exists bc; then
-        error_exit "bc是必需的依赖，请先安装bc"
+        print_message "$YELLOW" "警告: bc未安装，将使用内置的数学计算"
+        # 创建bc的替代函数
+        create_bc_wrapper
     fi
     
     print_message "$GREEN" "依赖检查完成"
 }
 
+# 创建curl的wrapper函数（使用wget）
+create_curl_wrapper() {
+    cat > "$SCRIPT_DIR/curl_wrapper.sh" << 'EOF'
+#!/bin/bash
+# curl wrapper using wget
+
+# 解析curl参数
+method="GET"
+url=""
+headers=()
+data=""
+output_headers=false
+silent=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -X)
+            method="$2"
+            shift 2
+            ;;
+        -H)
+            headers+=("$2")
+            shift 2
+            ;;
+        -d)
+            data="$2"
+            method="POST"
+            shift 2
+            ;;
+        -s)
+            silent=true
+            shift
+            ;;
+        -w)
+            if [[ "$2" == "%{http_code}" ]]; then
+                output_headers=true
+            fi
+            shift 2
+            ;;
+        *)
+            url="$1"
+            shift
+            ;;
+    esac
+done
+
+# 构建wget命令
+wget_cmd="wget -q -O-"
+
+# 添加headers
+for header in "${headers[@]}"; do
+    wget_cmd="$wget_cmd --header='$header'"
+done
+
+# 添加POST数据
+if [[ -n "$data" ]]; then
+    wget_cmd="$wget_cmd --post-data='$data'"
+fi
+
+# 执行请求
+if [[ "$output_headers" == "true" ]]; then
+    # 需要返回HTTP状态码
+    temp_file=$(mktemp)
+    eval "$wget_cmd --server-response '$url'" > "$temp_file" 2>&1
+
+    # 提取状态码
+    status_code=$(grep "HTTP/" "$temp_file" | tail -1 | awk '{print $2}' || echo "200")
+
+    # 输出内容和状态码
+    grep -v "HTTP/" "$temp_file" 2>/dev/null || echo ""
+    echo -n "$status_code"
+
+    rm -f "$temp_file"
+else
+    eval "$wget_cmd '$url'"
+fi
+EOF
+
+    chmod +x "$SCRIPT_DIR/curl_wrapper.sh"
+
+    # 创建curl别名
+    alias curl="$SCRIPT_DIR/curl_wrapper.sh"
+    export -f curl 2>/dev/null || true
+}
+
+# 创建bc的wrapper函数（使用awk）
+create_bc_wrapper() {
+    cat > "$SCRIPT_DIR/bc_wrapper.sh" << 'EOF'
+#!/bin/bash
+# bc wrapper using awk
+
+# 读取输入
+if [[ $# -gt 0 ]]; then
+    expression="$1"
+else
+    read -r expression
+fi
+
+# 使用awk进行计算
+echo "$expression" | awk '
+{
+    # 替换scale=N为空
+    gsub(/scale=[0-9]+;/, "")
+
+    # 计算表达式
+    result = eval_expr($0)
+
+    # 格式化输出
+    if (result == int(result)) {
+        printf "%.0f\n", result
+    } else {
+        printf "%.1f\n", result
+    }
+}
+
+function eval_expr(expr) {
+    # 简单的数学表达式计算
+    # 支持基本的四则运算
+    return eval(expr)
+}
+
+function eval(expr) {
+    # 使用awk的内置计算能力
+    cmd = "echo \"" expr "\" | awk \"BEGIN{print " expr "}\""
+    cmd | getline result
+    close(cmd)
+    return result
+}
+'
+EOF
+
+    chmod +x "$SCRIPT_DIR/bc_wrapper.sh"
+
+    # 创建bc别名
+    alias bc="$SCRIPT_DIR/bc_wrapper.sh"
+    export -f bc 2>/dev/null || true
+}
+
 # 创建目录结构
 create_directories() {
     print_message "$BLUE" "创建目录结构..."
-    
-    mkdir -p "$SCRIPT_DIR"
-    mkdir -p "$(dirname "$SYSTEMD_SERVICE_FILE")"
-    
+
+    # 检查当前用户权限
+    local current_user=$(whoami)
+    local user_home="$HOME"
+
+    # 如果没有指定SCRIPT_DIR或无法写入默认位置，使用用户目录
+    if [[ "$SCRIPT_DIR" == "/opt/vps-monitor" && ! -w "/opt" ]] 2>/dev/null; then
+        SCRIPT_DIR="$user_home/.local/share/vps-monitor"
+        print_message "$YELLOW" "没有/opt写权限，使用用户目录: $SCRIPT_DIR"
+    fi
+
+    # 创建主目录
+    if ! mkdir -p "$SCRIPT_DIR" 2>/dev/null; then
+        # 如果创建失败，尝试使用用户目录
+        SCRIPT_DIR="$user_home/.local/share/vps-monitor"
+        print_message "$YELLOW" "使用备用目录: $SCRIPT_DIR"
+        mkdir -p "$SCRIPT_DIR" || error_exit "无法创建目录: $SCRIPT_DIR"
+    fi
+
+    # 更新相关路径变量
+    CONFIG_FILE="$SCRIPT_DIR/config"
+    SERVICE_FILE="$SCRIPT_DIR/vps-monitor-service.sh"
+    PID_FILE="$SCRIPT_DIR/vps-monitor.pid"
+
+    # 处理日志目录
+    if [[ "$LOG_FILE" == "/var/log/vps-monitor/vps-monitor.log" && ! -w "/var/log" ]] 2>/dev/null; then
+        LOG_FILE="$SCRIPT_DIR/vps-monitor.log"
+        print_message "$YELLOW" "没有/var/log写权限，使用: $LOG_FILE"
+    fi
+
+    # 创建systemd用户目录
+    local systemd_user_dir="$user_home/.config/systemd/user"
+    if command_exists systemctl; then
+        if ! mkdir -p "$systemd_user_dir" 2>/dev/null; then
+            print_message "$YELLOW" "警告: 无法创建systemd用户目录，将使用传统服务方式"
+        else
+            SYSTEMD_SERVICE_FILE="$systemd_user_dir/vps-monitor.service"
+        fi
+    fi
+
     # 创建日志文件
-    touch "$LOG_FILE"
-    
+    if ! touch "$LOG_FILE" 2>/dev/null; then
+        LOG_FILE="$SCRIPT_DIR/vps-monitor.log"
+        touch "$LOG_FILE" || error_exit "无法创建日志文件: $LOG_FILE"
+    fi
+
     print_message "$GREEN" "目录结构创建完成"
+    print_message "$CYAN" "  主目录: $SCRIPT_DIR"
+    print_message "$CYAN" "  日志文件: $LOG_FILE"
+
+    # 导出更新后的变量
+    export SCRIPT_DIR CONFIG_FILE SERVICE_FILE PID_FILE LOG_FILE SYSTEMD_SERVICE_FILE
 }
 
 # 加载配置
@@ -276,40 +570,81 @@ get_cpu_usage() {
             cpu_load="0,0,0"
         fi
     else
-        # Linux系统
-        # 使用多种方法获取CPU使用率，提高兼容性
-        if command_exists top; then
-            cpu_usage=$(top -bn1 | grep -i "cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}' 2>/dev/null || echo "0")
-        elif [[ -f /proc/stat ]]; then
-            # 使用/proc/stat计算CPU使用率
-            local cpu_line=$(head -n1 /proc/stat)
-            local cpu_times=($cpu_line)
-            local idle=${cpu_times[4]}
-            local total=0
-            for time in "${cpu_times[@]:1:8}"; do
-                total=$((total + time))
-            done
-            cpu_usage=$(echo "scale=1; 100 - ($idle * 100 / $total)" | bc 2>/dev/null || echo "0")
-            # 确保cpu_usage是有效的数字
-            if ! [[ "$cpu_usage" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                cpu_usage="0"
+        # Linux系统 - 多种方法提高兼容性
+        cpu_usage="0"
+
+        # 方法1: 使用/proc/stat（最准确的方法）
+        if [[ -f /proc/stat ]]; then
+            local cpu_line=$(head -n1 /proc/stat 2>/dev/null)
+            if [[ -n "$cpu_line" ]]; then
+                local cpu_times=($cpu_line)
+                if [[ ${#cpu_times[@]} -ge 8 ]]; then
+                    local idle=${cpu_times[4]}
+                    local iowait=${cpu_times[5]:-0}
+                    local total=0
+
+                    # 计算总CPU时间（user + nice + system + idle + iowait + irq + softirq + steal）
+                    for i in {1..7}; do
+                        if [[ -n "${cpu_times[i]}" && "${cpu_times[i]}" =~ ^[0-9]+$ ]]; then
+                            total=$((total + cpu_times[i]))
+                        fi
+                    done
+
+                    if [[ $total -gt 0 ]]; then
+                        cpu_usage=$(echo "scale=1; 100 - (($idle + $iowait) * 100 / $total)" | bc 2>/dev/null || echo "0")
+                    fi
+                fi
             fi
-        else
-            cpu_usage="0"
         fi
 
-        # 获取负载平均值
+        # 方法2: 使用top命令（如果/proc/stat不可用）
+        if [[ "$cpu_usage" == "0" ]] && command_exists top; then
+            # 尝试不同的top输出格式
+            local top_output=$(timeout 3 top -bn1 2>/dev/null | head -10)
+            if [[ -n "$top_output" ]]; then
+                # 匹配不同格式的CPU行
+                if [[ "$top_output" =~ %Cpu\(s\):[[:space:]]*([0-9.]+)[[:space:]]*us.*[[:space:]]+([0-9.]+)[[:space:]]*id ]]; then
+                    # 格式: %Cpu(s): 12.5 us, 2.1 sy, 0.0 ni, 85.4 id
+                    local idle_percent="${BASH_REMATCH[2]}"
+                    cpu_usage=$(echo "scale=1; 100 - $idle_percent" | bc 2>/dev/null || echo "0")
+                elif [[ "$top_output" =~ CPU:[[:space:]]*([0-9.]+)%[[:space:]]*us.*[[:space:]]+([0-9.]+)%[[:space:]]*id ]]; then
+                    # 格式: CPU: 12.5% us, 2.1% sy, 85.4% id
+                    local idle_percent="${BASH_REMATCH[2]}"
+                    cpu_usage=$(echo "scale=1; 100 - $idle_percent" | bc 2>/dev/null || echo "0")
+                fi
+            fi
+        fi
+
+        # 方法3: 使用vmstat命令（备用方法）
+        if [[ "$cpu_usage" == "0" ]] && command_exists vmstat; then
+            local vmstat_output=$(timeout 3 vmstat 1 2 2>/dev/null | tail -1)
+            if [[ -n "$vmstat_output" ]]; then
+                local idle_percent=$(echo "$vmstat_output" | awk '{print $(NF-2)}' 2>/dev/null || echo "100")
+                if [[ "$idle_percent" =~ ^[0-9]+$ ]]; then
+                    cpu_usage=$((100 - idle_percent))
+                fi
+            fi
+        fi
+
+        # 确保cpu_usage是有效的数字
+        cpu_usage=$(sanitize_number "$cpu_usage" "0")
+
+        # 获取负载平均值 - 多种方法
+        cpu_load="0,0,0"
         if [[ -f /proc/loadavg ]]; then
-            cpu_load=$(cat /proc/loadavg | awk '{print $1","$2","$3}')
+            cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1","$2","$3}' || echo "0,0,0")
         elif command_exists uptime; then
             # 尝试从uptime命令获取负载
-            local uptime_output=$(uptime)
-            if [[ "$uptime_output" =~ load\ average:\ ([0-9.]+),\ ([0-9.]+),\ ([0-9.]+) ]]; then
+            local uptime_output=$(uptime 2>/dev/null)
+            if [[ "$uptime_output" =~ load[[:space:]]+average:[[:space:]]*([0-9.]+),[[:space:]]*([0-9.]+),[[:space:]]*([0-9.]+) ]]; then
                 cpu_load="${BASH_REMATCH[1]},${BASH_REMATCH[2]},${BASH_REMATCH[3]}"
-            else
-                cpu_load="0,0,0"
+            elif [[ "$uptime_output" =~ ([0-9.]+)[[:space:]]+([0-9.]+)[[:space:]]+([0-9.]+)$ ]]; then
+                cpu_load="${BASH_REMATCH[1]},${BASH_REMATCH[2]},${BASH_REMATCH[3]}"
             fi
-        else
+        fi
+
+        # 验证负载数据格式
+        if [[ ! "$cpu_load" =~ ^[0-9.]+,[0-9.]+,[0-9.]+$ ]]; then
             cpu_load="0,0,0"
         fi
     fi
@@ -362,17 +697,60 @@ get_memory_usage() {
             free=0
         fi
     else
-        # Linux系统
+        # Linux系统 - 多种方法提高兼容性
         if command_exists free; then
-            local mem_info=$(free -k | grep "^Mem:")
-            total=$(echo "$mem_info" | awk '{print $2}')
-            used=$(echo "$mem_info" | awk '{print $3}')
-            free=$(echo "$mem_info" | awk '{print $4}')
-        elif [[ -f /proc/meminfo ]]; then
-            total=$(grep "^MemTotal:" /proc/meminfo | awk '{print $2}')
-            free=$(grep "^MemFree:" /proc/meminfo | awk '{print $2}')
+            # 方法1: 使用free命令（最常用）
+            local mem_info=$(free -k 2>/dev/null | grep "^Mem:")
+            if [[ -n "$mem_info" ]]; then
+                total=$(echo "$mem_info" | awk '{print $2}')
+                used=$(echo "$mem_info" | awk '{print $3}')
+                free=$(echo "$mem_info" | awk '{print $4}')
+
+                # 在某些系统上，free命令的输出格式可能不同
+                # 如果第3列不是used，尝试计算
+                if [[ ! "$used" =~ ^[0-9]+$ ]]; then
+                    local available=$(echo "$mem_info" | awk '{print $7}' 2>/dev/null || echo "0")
+                    if [[ "$available" =~ ^[0-9]+$ ]]; then
+                        used=$((total - available))
+                    else
+                        used=$((total - free))
+                    fi
+                fi
+            fi
+        fi
+
+        # 方法2: 直接读取/proc/meminfo（备用方法）
+        if [[ -z "$total" || "$total" == "0" ]] && [[ -f /proc/meminfo ]]; then
+            total=$(grep "^MemTotal:" /proc/meminfo | awk '{print $2}' 2>/dev/null || echo "0")
+            local mem_free=$(grep "^MemFree:" /proc/meminfo | awk '{print $2}' 2>/dev/null || echo "0")
+            local buffers=$(grep "^Buffers:" /proc/meminfo | awk '{print $2}' 2>/dev/null || echo "0")
+            local cached=$(grep "^Cached:" /proc/meminfo | awk '{print $2}' 2>/dev/null || echo "0")
+
+            # 计算实际可用内存
+            free=$((mem_free + buffers + cached))
             used=$((total - free))
-        else
+        fi
+
+        # 方法3: 容器环境特殊处理
+        if [[ "$CONTAINER_ENV" == "true" && -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]]; then
+            local cgroup_limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo "0")
+            local cgroup_usage=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || echo "0")
+
+            # 如果cgroup限制合理（不是一个巨大的数字），使用cgroup数据
+            if [[ "$cgroup_limit" =~ ^[0-9]+$ && "$cgroup_limit" -lt 274877906944 ]]; then  # 256GB
+                total=$((cgroup_limit / 1024))  # 转换为KB
+                used=$((cgroup_usage / 1024))   # 转换为KB
+                free=$((total - used))
+            fi
+        fi
+
+        # 确保所有值都是有效数字
+        total=$(sanitize_integer "$total" "0")
+        used=$(sanitize_integer "$used" "0")
+        free=$(sanitize_integer "$free" "0")
+
+        # 如果仍然没有获取到数据，设置默认值
+        if [[ "$total" == "0" ]]; then
             total=0
             used=0
             free=0
@@ -395,20 +773,56 @@ get_memory_usage() {
 # 获取磁盘使用情况
 get_disk_usage() {
     local total used free usage_percent
-    
+
+    # 多种方法获取磁盘信息，提高兼容性
     if command_exists df; then
+        # 使用-k参数确保输出单位一致（KB）
         local disk_info=$(df -k / 2>/dev/null | tail -1)
-        total=$(echo "$disk_info" | awk '{printf "%.2f", $2 / 1024 / 1024}')
-        used=$(echo "$disk_info" | awk '{printf "%.2f", $3 / 1024 / 1024}')
-        free=$(echo "$disk_info" | awk '{printf "%.2f", $4 / 1024 / 1024}')
-        usage_percent=$(echo "$disk_info" | awk '{print $5}' | tr -d '%')
+        if [[ -n "$disk_info" ]]; then
+            # 从KB转换为GB，使用awk进行更安全的计算
+            total=$(echo "$disk_info" | awk '{printf "%.2f", $2 / 1024 / 1024}' 2>/dev/null || echo "0")
+            used=$(echo "$disk_info" | awk '{printf "%.2f", $3 / 1024 / 1024}' 2>/dev/null || echo "0")
+            free=$(echo "$disk_info" | awk '{printf "%.2f", $4 / 1024 / 1024}' 2>/dev/null || echo "0")
+            usage_percent=$(echo "$disk_info" | awk '{print $5}' | tr -d '%' 2>/dev/null || echo "0")
+
+            # 验证数据有效性
+            total=$(sanitize_number "$total" "0")
+            used=$(sanitize_number "$used" "0")
+            free=$(sanitize_number "$free" "0")
+            usage_percent=$(sanitize_integer "$usage_percent" "0")
+        else
+            total="0"
+            used="0"
+            free="0"
+            usage_percent="0"
+        fi
     else
+        # 如果df不可用，尝试其他方法
         total="0"
         used="0"
         free="0"
         usage_percent="0"
     fi
-    
+
+    # 容器环境特殊处理
+    if [[ "$CONTAINER_ENV" == "true" && "$total" == "0" ]]; then
+        # 在容器中，尝试获取当前目录的磁盘使用情况
+        if command_exists df; then
+            local container_disk=$(df -k . 2>/dev/null | tail -1)
+            if [[ -n "$container_disk" ]]; then
+                total=$(echo "$container_disk" | awk '{printf "%.2f", $2 / 1024 / 1024}' 2>/dev/null || echo "0")
+                used=$(echo "$container_disk" | awk '{printf "%.2f", $3 / 1024 / 1024}' 2>/dev/null || echo "0")
+                free=$(echo "$container_disk" | awk '{printf "%.2f", $4 / 1024 / 1024}' 2>/dev/null || echo "0")
+                usage_percent=$(echo "$container_disk" | awk '{print $5}' | tr -d '%' 2>/dev/null || echo "0")
+
+                total=$(sanitize_number "$total" "0")
+                used=$(sanitize_number "$used" "0")
+                free=$(sanitize_number "$free" "0")
+                usage_percent=$(sanitize_integer "$usage_percent" "0")
+            fi
+        fi
+    fi
+
     echo "{\"total\":$total,\"used\":$used,\"free\":$free,\"usage_percent\":$usage_percent}"
 }
 
@@ -491,20 +905,41 @@ get_network_usage() {
         fi
     else
         # Linux系统
-        # 获取默认网络接口
+        # 获取默认网络接口 - 多种方法提高兼容性
         local interface=""
+
+        # 方法1: 使用ip命令（现代Linux）
         if command_exists ip; then
             interface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
-        elif command_exists route; then
+        fi
+
+        # 方法2: 使用route命令（传统方法）
+        if [[ -z "$interface" ]] && command_exists route; then
             interface=$(route -n 2>/dev/null | awk '/^0.0.0.0/ {print $8}' | head -1)
         fi
 
-        # 如果没有找到默认接口，尝试找到活跃的网络接口
+        # 方法3: 检查/proc/net/route（直接读取内核路由表）
+        if [[ -z "$interface" && -f "/proc/net/route" ]]; then
+            interface=$(awk '/^[^I]/ && $2 == "00000000" {print $1; exit}' /proc/net/route 2>/dev/null)
+        fi
+
+        # 方法4: 查找活跃的网络接口
         if [[ -z "$interface" && -f "/proc/net/dev" ]]; then
-            # 查找有流量的接口（排除lo）
+            # 查找有流量的接口（排除lo和虚拟接口）
             interface=$(awk '/^ *[^:]*:/ {
                 gsub(/:/, "", $1)
-                if ($1 != "lo" && ($2 > 0 || $10 > 0)) {
+                if ($1 != "lo" && $1 !~ /^(docker|br-|veth|tun|tap)/ && ($2 > 0 || $10 > 0)) {
+                    print $1
+                    exit
+                }
+            }' /proc/net/dev)
+        fi
+
+        # 方法5: 如果还是没找到，使用第一个非lo接口
+        if [[ -z "$interface" && -f "/proc/net/dev" ]]; then
+            interface=$(awk '/^ *[^:]*:/ {
+                gsub(/:/, "", $1)
+                if ($1 != "lo" && $1 !~ /^(docker|br-|veth|tun|tap)/) {
                     print $1
                     exit
                 }
@@ -795,8 +1230,10 @@ log() {
 source_monitoring_functions() {
     # 提取主脚本中的监控函数
     if [[ -f "\$MAIN_SCRIPT" ]]; then
-        # 临时文件包含所需的函数
-        local temp_functions="/tmp/vps_monitor_functions_\$\$.sh"
+        # 临时文件包含所需的函数（使用用户可写目录）
+        local temp_dir="\${TMPDIR:-\${HOME}/.cache}"
+        mkdir -p "\$temp_dir" 2>/dev/null || temp_dir="\$SCRIPT_DIR"
+        local temp_functions="\$temp_dir/vps_monitor_functions_\$\$.sh"
 
         # 提取需要的函数和变量
         awk '
@@ -965,6 +1402,21 @@ create_systemd_service() {
         return 1
     fi
 
+    # 检查是否可以使用systemd用户服务
+    if ! systemctl --user status >/dev/null 2>&1; then
+        print_message "$YELLOW" "systemd用户服务不可用，将使用传统方式运行服务"
+        return 1
+    fi
+
+    # 确保systemd服务文件目录存在
+    local systemd_dir=$(dirname "$SYSTEMD_SERVICE_FILE")
+    if [[ ! -d "$systemd_dir" ]]; then
+        if ! mkdir -p "$systemd_dir" 2>/dev/null; then
+            print_message "$YELLOW" "无法创建systemd目录，将使用传统方式运行服务"
+            return 1
+        fi
+    fi
+
     cat > "$SYSTEMD_SERVICE_FILE" << EOF
 [Unit]
 Description=cf-vps-monitor Service
@@ -977,13 +1429,19 @@ Restart=always
 RestartSec=10
 User=$USER
 WorkingDirectory=$SCRIPT_DIR
+Environment=HOME=$HOME
+Environment=PATH=$PATH
 
 [Install]
 WantedBy=default.target
 EOF
 
     # 重新加载systemd配置
-    systemctl --user daemon-reload
+    if ! systemctl --user daemon-reload 2>/dev/null; then
+        print_message "$YELLOW" "无法重新加载systemd配置，将使用传统方式运行服务"
+        return 1
+    fi
+
     print_message "$GREEN" "systemd用户服务创建完成: $SYSTEMD_SERVICE_FILE"
     return 0
 }
@@ -1014,7 +1472,17 @@ start_service() {
 
     # 传统方式启动
     print_message "$BLUE" "使用传统方式启动服务..."
-    nohup "$SERVICE_FILE" > /dev/null 2>&1 &
+
+    # 确保服务脚本可执行
+    chmod +x "$SERVICE_FILE" 2>/dev/null || true
+
+    # 启动后台服务，重定向到日志文件
+    if command_exists nohup; then
+        nohup "$SERVICE_FILE" >> "$LOG_FILE" 2>&1 &
+    else
+        "$SERVICE_FILE" >> "$LOG_FILE" 2>&1 &
+    fi
+
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
@@ -1022,9 +1490,13 @@ start_service() {
     sleep 2
     if kill -0 "$pid" 2>/dev/null; then
         print_message "$GREEN" "监控服务已启动 (传统方式, PID: $pid)"
+        print_message "$CYAN" "日志文件: $LOG_FILE"
         return 0
     else
         print_message "$RED" "监控服务启动失败"
+        if [[ -f "$LOG_FILE" ]]; then
+            print_message "$YELLOW" "查看日志获取错误信息: tail -f $LOG_FILE"
+        fi
         rm -f "$PID_FILE"
         return 1
     fi
