@@ -145,7 +145,7 @@ Worker 需要访问你之前创建的 D1 数据库。
 ### 4. 添加环境变量
 
 在 `设置` → `变量和机密` 中添加以下环境变量，以增加安全性：
-1. 变量名：`JWT_SECRET`，类型：`密钥`， 值：`任意随机字符串`
+1. 变量名：`JWT_SECRET`，类型：`密钥`， 值：`任意30位左右的随机字符串`
 2. 添加完保存并部署
 
 ### 5. 设置触发频率（检测网站用）
@@ -172,7 +172,7 @@ Worker 需要访问你之前创建的 D1 数据库。
 3.  使用凭据登录：
     *   用户名: `admin`
     *   密码: `monitor2025!`
-4.  建议登录后，立即修改密码。
+4.  登录后，立即修改密码！！！
 
 ### 2. 添加服务器
 
@@ -199,7 +199,7 @@ wget https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-moni
 ```
 curl -O https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh
 ```
-*   安装需要 `API密钥` `服务器ID`  你的 `worker网址`
+*   安装需要  `服务器ID` `API密钥` 和你的 `worker网址`
 *   可以在后台点击 `查看密钥` 来获取上述三个参数
 *   按照提示输入安装完成后，Agent 会开始定期向你的面板发送数据。你应该能在面板上看到对应服务器的状态更新。
 
@@ -232,6 +232,6 @@ curl -O https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-m
 ## 注意事项
 
 *   **Worker 和 D1 每日配额:** Cloudflare Worker 和 D1 免费额度有限。详情请查阅 Cloudflare 文档。
-*   **安全性:** 默认密码 `monitor2025!` 非常不安全，请务必在首次登录后修改。Agent 使用的 API 密钥也应妥善保管。
+*   **安全性:** 默认密码非常不安全 ，请务必在首次登录后修改。Agent 使用的 API 密钥也应妥善保管。
 *   **错误处理:** 如果面板或 Agent 遇到问题，可以检查 Worker 的日志（在 Cloudflare 控制面板 Worker 页面）和 Agent 的日志。
 *   以上所有内容和代码均为AI生成，出现问题请直接拿着代码找AI吧。
