@@ -6,11 +6,11 @@
 
 前端：
 
-![image](https://github.com/user-attachments/assets/ff4e8ac1-eb33-4776-89ca-ee026df536f5)
+![image](https://github.com/user-attachments/assets/bca3c2c5-b5cd-45fe-bada-c617194e4d6e)
 
 后台：
 
-![image](https://github.com/user-attachments/assets/c63ede1c-2299-4d3e-9d2a-e5806dc6473b)
+![image](https://github.com/user-attachments/assets/743b523a-3892-4f3c-bb15-46dc0542378f)
 
 VPS端：
 
