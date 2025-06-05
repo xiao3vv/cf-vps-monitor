@@ -1,7 +1,7 @@
 # cf-vps-monitor
 [简体中文](https://github.com/kadidalax/cf-vps-monitor/blob/main/README.md) | [English](https://github.com/kadidalax/cf-vps-monitor/blob/main/README-EN.md)
 ## 用cloudflare worker搭建的vps探针 + 网站检测面板。
-## 前排警告：本项目仅供娱乐，不可用于主力，本人非程序员，能力有限，期待有能力的大佬接力完善。
+## 前排警告：本项目仅供学习和娱乐使用，不保证数据的准确性和可靠性。在生产环境中使用请谨慎评估。
 面板示例：https://vps-monitor.abo-vendor289.workers.dev/
 
 前端：
@@ -14,7 +14,7 @@
 
 VPS端：
 
-![image](https://github.com/user-attachments/assets/d10a83f2-17c1-4523-8f79-03bb1ce77e1f)
+![image](https://github.com/user-attachments/assets/91a45fbc-5456-4297-be93-360e96d5cdf8)
 
 
 # VPS 监控面板 (Cloudflare Worker + D1 版) - 部署指南
@@ -39,37 +39,83 @@ VPS端：
 6.  **重要：初始化数据库表**
     *   数据库创建后，你会看到数据库的概览页面。点击 `控制台` 标签页。
     *   复制下面的第一段 SQL 命令，粘贴到控制台的输入框中，然后点击 `执行`：
-      ```sql
-      CREATE TABLE IF NOT EXISTS admin_credentials (
-        username TEXT PRIMARY KEY,
-        password TEXT NOT NULL
-      );
-      ```
-    *   复制下面的第二段 SQL 命令，粘贴并点击 `执行`：
-      ```sql
-      CREATE TABLE IF NOT EXISTS servers (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        api_key TEXT NOT NULL UNIQUE,
-        created_at INTEGER NOT NULL,
-        sort_order INTEGER
-      );
-      ```
-    *   复制下面的第三段 SQL 命令，粘贴并点击 `执行`：
-      ```sql
-      CREATE TABLE IF NOT EXISTS metrics (
-        server_id TEXT PRIMARY KEY,
-        timestamp INTEGER,
-        cpu TEXT,
-        memory TEXT,
-        disk TEXT,
-        network TEXT,
-        FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
-      );
-      ```
+```
+CREATE TABLE IF NOT EXISTS admin_credentials (
+  username TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_login INTEGER,
+  failed_attempts INTEGER DEFAULT 0,
+  locked_until INTEGER DEFAULT NULL,
+  must_change_password INTEGER DEFAULT 0,
+  password_changed_at INTEGER DEFAULT NULL
+);
 
-    *   现在你的数据库表结构已经准备好了。
+CREATE TABLE IF NOT EXISTS servers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  api_key TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  sort_order INTEGER,
+  last_notified_down_at INTEGER DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+  server_id TEXT PRIMARY KEY,
+  timestamp INTEGER,
+  cpu TEXT,
+  memory TEXT,
+  disk TEXT,
+  network TEXT,
+  uptime INTEGER,
+  FOREIGN KEY(server_id) REFERENCES servers(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS monitored_sites (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL UNIQUE,
+  name TEXT,
+  added_at INTEGER NOT NULL,
+  last_checked INTEGER,
+  last_status TEXT DEFAULT 'PENDING',
+  last_status_code INTEGER,
+  last_response_time_ms INTEGER,
+  sort_order INTEGER,
+  last_notified_down_at INTEGER DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS site_status_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  status_code INTEGER,
+  response_time_ms INTEGER,
+  FOREIGN KEY(site_id) REFERENCES monitored_sites(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_status_history_site_id_timestamp ON site_status_history (site_id, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS telegram_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  bot_token TEXT,
+  chat_id TEXT,
+  enable_notifications INTEGER DEFAULT 0,
+  updated_at INTEGER
+);
+
+INSERT OR IGNORE INTO telegram_config (id, bot_token, chat_id, enable_notifications, updated_at) VALUES (1, NULL, NULL, 0, NULL);
+
+CREATE TABLE IF NOT EXISTS app_config (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+INSERT OR IGNORE INTO app_config (key, value) VALUES ('vps_report_interval_seconds', '60');
+```
+
+ *   现在你的数据库表结构已经准备好了。
 
 ### 2. 创建并配置 Worker
 
@@ -90,14 +136,19 @@ VPS端：
 
 Worker 需要访问你之前创建的 D1 数据库。
 
-1.  在 Worker 的管理页面（编辑代码页面上方有 Worker 名称，点击它可以返回管理页面），选择 `设置` 标签页。
-2.  在设置页面中，选择 `绑定` 子菜单。
-3.  选择`D1数据库`。
-4.  在 `变量名称` 处输入 `DB` (必须大写)。
-6.  在 `D1 数据库` 下拉菜单中，选择你之前创建的数据库 (例如 `vps-monitor-db`)。
-7.  点击 `部署`。
+1.  在 Worker 的管理页面（编辑代码页面上方有 Worker 名称，点击它可以返回管理页面），选择 `绑定` 标签页。
+2.  选择`D1数据库`。
+3.  在 `变量名称` 处输入 `DB` (必须大写)。
+4.  在 `D1 数据库` 下拉菜单中，选择你之前创建的数据库 (例如 `vps-monitor-db`)。
+5.  点击 `部署`。
 
-### 4. 设置触发频率（检测网站用）
+### 4. 添加环境变量
+
+在 `设置` → `变量和机密` 中添加以下环境变量，以增加安全性：
+1. 变量名：`JWT_SECRET`，类型：`密钥`， 值：`任意随机字符串`
+2. 添加完保存并部署
+
+### 5. 设置触发频率（检测网站用）
 
 1.  在 Worker 的管理页面选择 `设置` 标签页。
 2.  在设置页面中，选择 `触发事件` 子菜单。
@@ -105,7 +156,7 @@ Worker 需要访问你之前创建的 D1 数据库。
 4.  选择`计划`，执行 Worker 的频率选择`小时`，下面的框填入1（即每整点检测一次网站）。
 5.  点击`添加`。
 
-### 5. 访问面板
+### 6. 访问面板
 
 部署和绑定完成后，你的监控面板应该可以通过 Worker 的 URL 访问了。
 
@@ -118,10 +169,10 @@ Worker 需要访问你之前创建的 D1 数据库。
 
 1.  访问你的 Worker URL。
 2.  点击页面右上角的 `登录` 或直接访问 `/login` 路径 (例如 `https://vps-monitor.abo-vendor289.workers.dev/login`)。
-3.  使用默认凭据登录：
+3.  使用凭据登录：
     *   用户名: `admin`
-    *   密码: `admin`
-4.  登录后，建议立即修改密码。
+    *   密码: `monitor2025!`
+4.  建议登录后，立即修改密码。
 
 ### 2. 添加服务器
 
@@ -148,8 +199,8 @@ wget https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-moni
 ```
 curl -O https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh
 ```
-*   安装需要 `API密钥` `服务器ID`  你的 `worker网址` 和`上报间隔`(和后台的更新频率设置最好保持一致)`
-*   可以在后台点击 `查看密钥` 来获取上述前三个参数
+*   安装需要 `API密钥` `服务器ID`  你的 `worker网址`
+*   可以在后台点击 `查看密钥` 来获取上述三个参数
 *   按照提示输入安装完成后，Agent 会开始定期向你的面板发送数据。你应该能在面板上看到对应服务器的状态更新。
 
 ### 4. Agent 管理
@@ -181,6 +232,6 @@ curl -O https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-m
 ## 注意事项
 
 *   **Worker 和 D1 每日配额:** Cloudflare Worker 和 D1 免费额度有限。详情请查阅 Cloudflare 文档。
-*   **安全性:** 默认密码 `admin` 非常不安全，请务必在首次登录后修改。Agent 使用的 API 密钥也应妥善保管。
+*   **安全性:** 默认密码 `monitor2025!` 非常不安全，请务必在首次登录后修改。Agent 使用的 API 密钥也应妥善保管。
 *   **错误处理:** 如果面板或 Agent 遇到问题，可以检查 Worker 的日志（在 Cloudflare 控制面板 Worker 页面）和 Agent 的日志。
 *   以上所有内容和代码均为AI生成，出现问题请直接拿着代码找AI吧。
