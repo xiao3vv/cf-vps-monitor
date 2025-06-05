@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS app_config (
 INSERT OR IGNORE INTO app_config (key, value) VALUES ('vps_report_interval_seconds', '60');
 ```
 
- *   现在你的数据库表结构已经准备好了。
+ *   正常会看到 `此查询已成功执行。响应时间 1090 毫秒，查询时间 0.24 毫秒`，现在你的数据库表结构已经准备好了。
 
 ### 2. 创建并配置 Worker
 
