@@ -242,14 +242,17 @@ get_cpu_usage() {
     if [[ "$OS" == "FreeBSD" ]]; then
         # 使用sysctl获取CPU使用率
         if command_exists sysctl; then
-            local cpu_idle=$(sysctl -n kern.cp_time | awk '{print $5}')
-            local cpu_total=$(sysctl -n kern.cp_time | awk '{sum=0; for(i=1;i<=NF;i++) sum+=$i; print sum}')
-            if [[ $cpu_total -gt 0 ]]; then
+            local cpu_idle=$(sysctl -n kern.cp_time 2>/dev/null | awk '{print $5}' 2>/dev/null || echo "0")
+            local cpu_total=$(sysctl -n kern.cp_time 2>/dev/null | awk '{sum=0; for(i=1;i<=NF;i++) sum+=$i; print sum}' 2>/dev/null || echo "0")
+
+            # 确保获取到有效数值
+            cpu_idle=$(sanitize_integer "$cpu_idle" "0")
+            cpu_total=$(sanitize_integer "$cpu_total" "0")
+
+            if [[ $cpu_total -gt 0 && $cpu_idle -le $cpu_total ]]; then
                 cpu_usage=$(echo "scale=1; 100 - ($cpu_idle * 100 / $cpu_total)" | bc 2>/dev/null || echo "0")
                 # 确保cpu_usage是有效的数字
-                if ! [[ "$cpu_usage" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                    cpu_usage="0"
-                fi
+                cpu_usage=$(sanitize_number "$cpu_usage" "0")
             else
                 cpu_usage="0"
             fi
@@ -259,9 +262,15 @@ get_cpu_usage() {
 
         # FreeBSD负载平均值
         if command_exists sysctl; then
-            local load1=$(sysctl -n vm.loadavg | awk '{print $2}')
-            local load5=$(sysctl -n vm.loadavg | awk '{print $3}')
-            local load15=$(sysctl -n vm.loadavg | awk '{print $4}')
+            local load1=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' 2>/dev/null || echo "0")
+            local load5=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $3}' 2>/dev/null || echo "0")
+            local load15=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $4}' 2>/dev/null || echo "0")
+
+            # 清理负载数值
+            load1=$(sanitize_number "$load1" "0")
+            load5=$(sanitize_number "$load5" "0")
+            load15=$(sanitize_number "$load15" "0")
+
             cpu_load="$load1,$load5,$load15"
         else
             cpu_load="0,0,0"
@@ -316,16 +325,37 @@ get_memory_usage() {
     if [[ "$OS" == "FreeBSD" ]]; then
         if command_exists sysctl; then
             # FreeBSD内存信息
-            local page_size=$(sysctl -n hw.pagesize)
-            local total_pages=$(sysctl -n vm.stats.vm.v_page_count)
-            local free_pages=$(sysctl -n vm.stats.vm.v_free_count)
+            local page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo "4096")
+            local total_pages=$(sysctl -n vm.stats.vm.v_page_count 2>/dev/null || echo "0")
+            local free_pages=$(sysctl -n vm.stats.vm.v_free_count 2>/dev/null || echo "0")
             local inactive_pages=$(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null || echo "0")
             local cache_pages=$(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null || echo "0")
 
+            # 清理和验证数值
+            page_size=$(sanitize_integer "$page_size" "4096")
+            total_pages=$(sanitize_integer "$total_pages" "0")
+            free_pages=$(sanitize_integer "$free_pages" "0")
+            inactive_pages=$(sanitize_integer "$inactive_pages" "0")
+            cache_pages=$(sanitize_integer "$cache_pages" "0")
+
             # 计算内存（转换为KB）
-            total=$(( (total_pages * page_size) / 1024 ))
-            free=$(( ((free_pages + inactive_pages + cache_pages) * page_size) / 1024 ))
-            used=$((total - free))
+            if [[ $page_size -gt 0 && $total_pages -gt 0 ]]; then
+                total=$(( (total_pages * page_size) / 1024 ))
+                free=$(( ((free_pages + inactive_pages + cache_pages) * page_size) / 1024 ))
+                used=$((total - free))
+
+                # 确保数值合理
+                if [[ $used -lt 0 ]]; then
+                    used=0
+                fi
+                if [[ $free -lt 0 ]]; then
+                    free=0
+                fi
+            else
+                total=0
+                used=0
+                free=0
+            fi
         else
             total=0
             used=0
@@ -416,17 +446,22 @@ get_network_usage() {
             # FreeBSD netstat -i -b 输出格式：
             # Name  Mtu Network       Address              Ipkts Ierrs Idrop     Ibytes    Opkts Oerrs     Obytes  Coll
             # 同一接口可能有多行，我们只取第一行（Link层的统计）
-            local net_stats=$(netstat -i -b | grep "^$interface" | grep "<Link#" | head -1)
+            local net_stats=$(netstat -i -b 2>/dev/null | grep "^$interface" | grep "<Link#" | head -1 2>/dev/null || echo "")
             if [[ -n "$net_stats" ]]; then
-                total_download=$(echo "$net_stats" | awk '{print $8}')  # Ibytes
-                total_upload=$(echo "$net_stats" | awk '{print $11}')   # Obytes
+                local raw_download=$(echo "$net_stats" | awk '{print $8}' 2>/dev/null || echo "0")  # Ibytes
+                local raw_upload=$(echo "$net_stats" | awk '{print $11}' 2>/dev/null || echo "0")   # Obytes
 
-                # 确保是数字
-                if ! [[ "$total_download" =~ ^[0-9]+$ ]]; then
-                    total_download=0
-                fi
-                if ! [[ "$total_upload" =~ ^[0-9]+$ ]]; then
-                    total_upload=0
+                # 清理和验证数值
+                total_download=$(sanitize_integer "$raw_download" "0")
+                total_upload=$(sanitize_integer "$raw_upload" "0")
+            else
+                # 如果没有找到Link统计，尝试其他方法
+                local net_stats_alt=$(netstat -i -b 2>/dev/null | grep "^$interface" | head -1 2>/dev/null || echo "")
+                if [[ -n "$net_stats_alt" ]]; then
+                    local raw_download=$(echo "$net_stats_alt" | awk '{print $8}' 2>/dev/null || echo "0")
+                    local raw_upload=$(echo "$net_stats_alt" | awk '{print $11}' 2>/dev/null || echo "0")
+                    total_download=$(sanitize_integer "$raw_download" "0")
+                    total_upload=$(sanitize_integer "$raw_upload" "0")
                 fi
             fi
 
@@ -544,9 +579,29 @@ get_uptime() {
     if [[ "$OS" == "FreeBSD" ]]; then
         if command_exists sysctl; then
             # FreeBSD使用sysctl获取启动时间
-            local boot_time=$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',')
+            local boot_time_raw=$(sysctl -n kern.boottime 2>/dev/null | awk '{print $4}' | tr -d ',' 2>/dev/null || echo "0")
+            local boot_time=$(sanitize_integer "$boot_time_raw" "0")
             local current_time=$(date +%s)
-            uptime_seconds=$((current_time - boot_time))
+
+            if [[ $boot_time -gt 0 && $current_time -gt $boot_time ]]; then
+                uptime_seconds=$((current_time - boot_time))
+            else
+                # 如果无法获取启动时间，尝试其他方法
+                if command_exists uptime; then
+                    # 尝试解析uptime命令输出
+                    local uptime_str=$(uptime 2>/dev/null | grep -o 'up [^,]*' | sed 's/up //' || echo "0")
+                    # 简化处理，假设格式为 "X days" 或 "X:Y"
+                    if [[ "$uptime_str" =~ ([0-9]+).*day ]]; then
+                        uptime_seconds=$((${BASH_REMATCH[1]} * 86400))
+                    else
+                        uptime_seconds=0
+                    fi
+                else
+                    uptime_seconds=0
+                fi
+            fi
+        else
+            uptime_seconds=0
         fi
     else
         # Linux系统
@@ -825,6 +880,7 @@ source_monitoring_functions() {
         /^# 获取系统运行时间/,/^}/ { if (/^}/) print; else print; next }
         /^# 验证和清理数值/,/^}/ { if (/^}/) print; else print; next }
         /^# 验证和清理整数/,/^}/ { if (/^}/) print; else print; next }
+        /^# 检查JSON对象完整性/,/^}/ { if (/^}/) print; else print; next }
         /^command_exists\(\)/ { print; getline; print; getline; print; next }
         ' "\$MAIN_SCRIPT" > "\$temp_functions"
 
