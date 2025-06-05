@@ -1238,14 +1238,38 @@ async function handleApiRequest(request, env, ctx) {
       }
 
       // 解析和验证上报数据
-      const reportData = await request.json();
+      let reportData;
+      let rawBody;
+      try {
+        rawBody = await request.text();
+        console.log('收到的原始数据:', rawBody.substring(0, 200) + '...');
+        reportData = JSON.parse(rawBody);
+      } catch (parseError) {
+        console.error('JSON解析错误:', parseError.message);
+        console.error('原始数据:', rawBody || '无法读取原始数据');
+        return new Response(JSON.stringify({
+          error: 'Invalid JSON format',
+          message: `JSON解析失败: ${parseError.message}`,
+          details: '请检查上报的JSON格式是否正确'
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
       const requiredFields = ['timestamp', 'cpu', 'memory', 'disk', 'network'];
 
       for (const field of requiredFields) {
         if (!reportData[field]) {
+          console.error(`VPS数据验证失败 - 缺少字段: ${field}`, {
+            serverId,
+            receivedFields: Object.keys(reportData),
+            missingField: field
+          });
           return new Response(JSON.stringify({
             error: 'Invalid data format',
-            message: `缺少必需字段: ${field}`
+            message: `缺少必需字段: ${field}`,
+            details: `上报数据必须包含以下字段: ${requiredFields.join(', ')}, uptime`,
+            received_fields: Object.keys(reportData)
           }), {
             status: 400,
             headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -1254,13 +1278,54 @@ async function handleApiRequest(request, env, ctx) {
       }
 
       if (typeof reportData.uptime === 'undefined') {
+        console.error(`VPS数据验证失败 - 缺少uptime字段`, {
+          serverId,
+          receivedFields: Object.keys(reportData)
+        });
         return new Response(JSON.stringify({
           error: 'Invalid data format',
-          message: '缺少uptime字段'
+          message: '缺少uptime字段',
+          details: 'uptime字段是必需的，用于记录系统运行时间（秒）',
+          received_fields: Object.keys(reportData)
         }), {
           status: 400,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
+      }
+
+      // 验证JSON对象结构
+      const validateJsonObject = (obj, fieldName) => {
+        if (!obj || typeof obj !== 'object') {
+          console.warn(`${fieldName}字段不是有效的对象:`, obj);
+          return false;
+        }
+        return true;
+      };
+
+      // 验证各个JSON字段的结构
+      if (!validateJsonObject(reportData.cpu, 'CPU')) {
+        console.error('CPU数据结构无效:', reportData.cpu);
+      }
+      if (!validateJsonObject(reportData.memory, '内存')) {
+        console.error('内存数据结构无效:', reportData.memory);
+      }
+      if (!validateJsonObject(reportData.disk, '磁盘')) {
+        console.error('磁盘数据结构无效:', reportData.disk);
+      }
+      if (!validateJsonObject(reportData.network, '网络')) {
+        console.error('网络数据结构无效:', reportData.network);
+      }
+
+      // 验证时间戳
+      if (!Number.isInteger(reportData.timestamp) || reportData.timestamp <= 0) {
+        console.warn('时间戳无效，使用当前时间:', reportData.timestamp);
+        reportData.timestamp = Math.floor(Date.now() / 1000);
+      }
+
+      // 验证uptime
+      if (!Number.isInteger(reportData.uptime) || reportData.uptime < 0) {
+        console.warn('运行时间无效，设置为0:', reportData.uptime);
+        reportData.uptime = 0;
       }
 
       // 保存监控数据
@@ -1301,14 +1366,22 @@ async function handleApiRequest(request, env, ctx) {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     } catch (error) {
-      console.error("数据上报API错误:", error);
+      console.error("数据上报API错误:", error, {
+        serverId,
+        errorType: error.constructor.name,
+        errorMessage: error.message,
+        stack: error.stack
+      });
+
       if (error.message.includes('no such table')) {
         console.warn("服务器或监控表不存在，尝试创建...");
         try {
           await env.DB.exec(D1_SCHEMAS.servers + D1_SCHEMAS.metrics);
           return new Response(JSON.stringify({
             error: 'Database table created or server not found, please retry or verify server ID/API Key',
-            message: '数据库表已创建或服务器不存在，请重试或验证服务器ID/API密钥'
+            message: '数据库表已创建或服务器不存在，请重试或验证服务器ID/API密钥',
+            details: '如果问题持续存在，请检查服务器配置',
+            retry_suggested: true
           }), {
             status: 503,
             headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -1317,16 +1390,20 @@ async function handleApiRequest(request, env, ctx) {
           console.error("创建表失败:", createError);
           return new Response(JSON.stringify({
             error: 'Database error',
-            message: createError.message
+            message: `数据库错误: ${createError.message}`,
+            details: '无法创建必需的数据库表，请联系管理员'
           }), {
             status: 500,
             headers: { 'Content-Type': 'application/json', ...corsHeaders }
           });
         }
       }
+
       return new Response(JSON.stringify({
         error: 'Internal server error',
-        message: error.message
+        message: `服务器内部错误: ${error.message}`,
+        details: '请稍后重试，如果问题持续存在请联系管理员',
+        error_id: Date.now().toString(36) // 简单的错误ID用于追踪
       }), {
         status: 500,
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
