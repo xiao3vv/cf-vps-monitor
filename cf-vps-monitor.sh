@@ -555,20 +555,19 @@ get_cpu_usage() {
         fi
 
         # FreeBSD负载平均值
+        local load1="0" load5="0" load15="0"
         if command_exists sysctl; then
-            local load1=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' 2>/dev/null || echo "0")
-            local load5=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $3}' 2>/dev/null || echo "0")
-            local load15=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $4}' 2>/dev/null || echo "0")
+            load1=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' 2>/dev/null || echo "0")
+            load5=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $3}' 2>/dev/null || echo "0")
+            load15=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $4}' 2>/dev/null || echo "0")
 
             # 清理负载数值
             load1=$(sanitize_number "$load1" "0")
             load5=$(sanitize_number "$load5" "0")
             load15=$(sanitize_number "$load15" "0")
-
-            cpu_load="$load1,$load5,$load15"
-        else
-            cpu_load="0,0,0"
         fi
+
+        cpu_load="$load1,$load5,$load15"
     else
         # Linux系统 - 多种方法提高兼容性
         cpu_usage="0"
@@ -630,23 +629,30 @@ get_cpu_usage() {
         cpu_usage=$(sanitize_number "$cpu_usage" "0")
 
         # 获取负载平均值 - 多种方法
-        cpu_load="0,0,0"
+        local load1="0" load5="0" load15="0"
         if [[ -f /proc/loadavg ]]; then
-            cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1","$2","$3}' || echo "0,0,0")
+            local load_data=$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}' || echo "0 0 0")
+            read -r load1 load5 load15 <<< "$load_data"
         elif command_exists uptime; then
             # 尝试从uptime命令获取负载
             local uptime_output=$(uptime 2>/dev/null)
             if [[ "$uptime_output" =~ load[[:space:]]+average:[[:space:]]*([0-9.]+),[[:space:]]*([0-9.]+),[[:space:]]*([0-9.]+) ]]; then
-                cpu_load="${BASH_REMATCH[1]},${BASH_REMATCH[2]},${BASH_REMATCH[3]}"
+                load1="${BASH_REMATCH[1]}"
+                load5="${BASH_REMATCH[2]}"
+                load15="${BASH_REMATCH[3]}"
             elif [[ "$uptime_output" =~ ([0-9.]+)[[:space:]]+([0-9.]+)[[:space:]]+([0-9.]+)$ ]]; then
-                cpu_load="${BASH_REMATCH[1]},${BASH_REMATCH[2]},${BASH_REMATCH[3]}"
+                load1="${BASH_REMATCH[1]}"
+                load5="${BASH_REMATCH[2]}"
+                load15="${BASH_REMATCH[3]}"
             fi
         fi
 
-        # 验证负载数据格式
-        if [[ ! "$cpu_load" =~ ^[0-9.]+,[0-9.]+,[0-9.]+$ ]]; then
-            cpu_load="0,0,0"
-        fi
+        # 清理和验证每个负载值
+        load1=$(sanitize_number "$load1" "0")
+        load5=$(sanitize_number "$load5" "0")
+        load15=$(sanitize_number "$load15" "0")
+
+        cpu_load="$load1,$load5,$load15"
     fi
 
     echo "{\"usage_percent\":$cpu_usage,\"load_avg\":[$cpu_load]}"
@@ -1063,6 +1069,14 @@ sanitize_number() {
 
     # 检查是否为有效数字
     if [[ "$value" =~ ^[0-9]+\.?[0-9]*$ ]] || [[ "$value" =~ ^[0-9]*\.[0-9]+$ ]]; then
+        # 确保小数点前有数字（修复.2变成0.2）
+        if [[ "$value" =~ ^\. ]]; then
+            value="0$value"
+        fi
+        # 确保小数点后有数字（修复2.变成2.0）
+        if [[ "$value" =~ \.$ ]]; then
+            value="${value}0"
+        fi
         echo "$value"
     else
         echo "$default_value"
