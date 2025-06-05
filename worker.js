@@ -727,16 +727,7 @@ async function handleApiRequest(request, env, ctx) {
     });
   }
 
-  // 获取默认凭据信息
-  if (path === '/api/auth/default-credentials' && method === 'GET') {
-    return new Response(JSON.stringify({
-      username: DEFAULT_ADMIN_CONFIG.USERNAME,
-      password: DEFAULT_ADMIN_CONFIG.PASSWORD,
-      message: '建议首次登录后修改密码'
-    }), {
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
-  }
+
   
   // ==================== 服务器API ====================
 
@@ -888,7 +879,7 @@ async function handleApiRequest(request, env, ctx) {
     try {
       const { results } = await env.DB.prepare(`
         SELECT s.id, s.name, s.description, s.created_at, s.sort_order,
-               s.last_notified_down_at, m.timestamp as last_report
+               s.last_notified_down_at, s.api_key, m.timestamp as last_report
         FROM servers s
         LEFT JOIN metrics m ON s.id = m.server_id
         ORDER BY s.sort_order ASC NULLS LAST, s.name ASC
@@ -1343,60 +1334,7 @@ async function handleApiRequest(request, env, ctx) {
     }
   }
   
-  // 获取服务器API密钥（管理员）
-  if (path.match(/\/api\/admin\/servers\/[^\/]+\/key$/) && method === 'GET') {
-    const user = await authenticateRequest(request, env);
-    if (!user) {
-      return new Response(JSON.stringify({
-        error: 'Unauthorized',
-        message: '需要管理员权限'
-      }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
 
-    try {
-      const serverId = extractPathSegment(path, 4);
-      if (!serverId) {
-        return new Response(JSON.stringify({
-          error: 'Invalid server ID',
-          message: '无效的服务器ID格式'
-        }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
-      }
-
-      const result = await env.DB.prepare(
-        'SELECT api_key FROM servers WHERE id = ?'
-      ).bind(serverId).first();
-
-      if (!result) {
-        return new Response(JSON.stringify({
-          error: 'Server not found'
-        }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
-      }
-
-      return new Response(JSON.stringify({
-        api_key: result.api_key
-      }), {
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    } catch (error) {
-      console.error("管理员获取API密钥错误:", error);
-      return new Response(JSON.stringify({
-        error: 'Internal server error',
-        message: error.message
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-    }
-  }
 
   // ==================== 高级排序功能 ====================
 
@@ -1465,9 +1403,9 @@ async function handleApiRequest(request, env, ctx) {
     }
 
     try {
-      const { sortBy, order } = await request.json(); // sortBy: 'name'|'status'|'created_at', order: 'asc'|'desc'
+      const { sortBy, order } = await request.json(); // sortBy: 'custom'|'name'|'status', order: 'asc'|'desc'
 
-      const validSortFields = ['name', 'status', 'created_at'];
+      const validSortFields = ['custom', 'name', 'status'];
       const validOrders = ['asc', 'desc'];
 
       if (!validSortFields.includes(sortBy) || !validOrders.includes(order)) {
@@ -1480,14 +1418,22 @@ async function handleApiRequest(request, env, ctx) {
         });
       }
 
+      // 如果是自定义排序，直接返回成功，不做任何操作
+      if (sortBy === 'custom') {
+        return new Response(JSON.stringify({
+          success: true,
+          message: '已设置为自定义排序'
+        }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
       // 获取所有服务器并排序
       let orderClause = '';
       if (sortBy === 'name') {
         orderClause = `ORDER BY name ${order.toUpperCase()}`;
       } else if (sortBy === 'status') {
         orderClause = `ORDER BY (CASE WHEN m.timestamp IS NULL OR (strftime('%s', 'now') - m.timestamp) > 300 THEN 1 ELSE 0 END) ${order.toUpperCase()}, name ASC`;
-      } else if (sortBy === 'created_at') {
-        orderClause = `ORDER BY created_at ${order.toUpperCase()}`;
       }
 
       const { results: servers } = await env.DB.prepare(`
@@ -1980,9 +1926,9 @@ async function handleApiRequest(request, env, ctx) {
     }
 
     try {
-      const { sortBy, order } = await request.json(); // sortBy: 'name'|'url'|'status'|'added_at', order: 'asc'|'desc'
+      const { sortBy, order } = await request.json(); // sortBy: 'custom'|'name'|'url'|'status', order: 'asc'|'desc'
 
-      const validSortFields = ['name', 'url', 'status', 'added_at'];
+      const validSortFields = ['custom', 'name', 'url', 'status'];
       const validOrders = ['asc', 'desc'];
 
       if (!validSortFields.includes(sortBy) || !validOrders.includes(order)) {
@@ -1991,6 +1937,16 @@ async function handleApiRequest(request, env, ctx) {
           message: '无效的排序参数'
         }), {
           status: 400,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // 如果是自定义排序，直接返回成功，不做任何操作
+      if (sortBy === 'custom') {
+        return new Response(JSON.stringify({
+          success: true,
+          message: '已设置为自定义排序'
+        }), {
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
       }
@@ -2172,35 +2128,35 @@ async function handleApiRequest(request, env, ctx) {
 
   // ==================== VPS配置API ====================
 
-  // 获取VPS上报间隔（公开）
+  // 获取VPS上报间隔（公开，优化版本）
   if (path === '/api/admin/settings/vps-report-interval' && method === 'GET') {
     try {
-      const result = await env.DB.prepare(
-        'SELECT value FROM app_config WHERE key = ?'
-      ).bind('vps_report_interval_seconds').first();
+      // 优化：减少数据库查询，快速返回默认值或缓存值
+      let interval = 60; // 默认值
 
-      const interval = result ? parseInt(result.value, 10) : 60;
+      try {
+        const result = await env.DB.prepare(
+          'SELECT value FROM app_config WHERE key = ?'
+        ).bind('vps_report_interval_seconds').first();
+
+        if (result && result.value) {
+          const parsedInterval = parseInt(result.value, 10);
+          if (!isNaN(parsedInterval) && parsedInterval > 0) {
+            interval = parsedInterval;
+          }
+        }
+      } catch (dbError) {
+        console.warn("数据库查询VPS间隔失败，使用默认值:", dbError);
+        // 继续使用默认值，不阻塞响应
+      }
 
       return new Response(JSON.stringify({ interval }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     } catch (error) {
       console.error("获取VPS上报间隔错误:", error);
-      if (error.message.includes('no such table')) {
-        try {
-          await env.DB.exec(D1_SCHEMAS.app_config);
-          return new Response(JSON.stringify({ interval: 60 }), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        } catch (createError) {
-          console.error("创建应用配置表失败:", createError);
-        }
-      }
-      return new Response(JSON.stringify({
-        error: 'Internal server error',
-        message: error.message
-      }), {
-        status: 500,
+      // 任何错误都返回默认值，确保系统继续工作
+      return new Response(JSON.stringify({ interval: 60 }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     }
@@ -3606,9 +3562,9 @@ function getAdminHtml() {
                     <i class="bi bi-sort-alpha-down"></i> 自动排序
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="serverAutoSortDropdown">
+                    <li><a class="dropdown-item active" href="#" onclick="autoSortServers('custom')">自定义排序</a></li>
                     <li><a class="dropdown-item" href="#" onclick="autoSortServers('name')">按名称排序</a></li>
                     <li><a class="dropdown-item" href="#" onclick="autoSortServers('status')">按状态排序</a></li>
-                    <li><a class="dropdown-item" href="#" onclick="autoSortServers('created_at')">按创建时间排序</a></li>
                 </ul>
             </div>
 
@@ -3659,10 +3615,10 @@ function getAdminHtml() {
                         <i class="bi bi-sort-alpha-down"></i> 自动排序
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="siteAutoSortDropdown">
+                        <li><a class="dropdown-item active" href="#" onclick="autoSortSites('custom')">自定义排序</a></li>
                         <li><a class="dropdown-item" href="#" onclick="autoSortSites('name')">按名称排序</a></li>
                         <li><a class="dropdown-item" href="#" onclick="autoSortSites('url')">按URL排序</a></li>
                         <li><a class="dropdown-item" href="#" onclick="autoSortSites('status')">按状态排序</a></li>
-                        <li><a class="dropdown-item" href="#" onclick="autoSortSites('added_at')">按添加时间排序</a></li>
                     </ul>
                 </div>
 
@@ -4905,23 +4861,11 @@ document.addEventListener('DOMContentLoaded', function() {
     checkLoginStatus();
 });
 
-// 加载默认凭据信息
-async function loadDefaultCredentials() {
-    try {
-        const response = await fetch('/api/auth/default-credentials');
-        if (response.ok) {
-            const data = await response.json();
-            const credentialsInfo = document.getElementById('defaultCredentialsInfo');
-            if (credentialsInfo) {
-                credentialsInfo.innerHTML = '默认账号密码: <strong>' + data.username + '</strong> / <strong>' + data.password + '</strong><br><small class="text-warning">' + data.message + '</small>';
-            }
-        }
-    } catch (error) {
-        console.error('加载默认凭据信息错误:', error);
-        const credentialsInfo = document.getElementById('defaultCredentialsInfo');
-        if (credentialsInfo) {
-            credentialsInfo.innerHTML = '默认账号密码: admin / monitor2025!';
-        }
+// 加载默认凭据信息（本地显示，无需API调用）
+function loadDefaultCredentials() {
+    const credentialsInfo = document.getElementById('defaultCredentialsInfo');
+    if (credentialsInfo) {
+        credentialsInfo.innerHTML = '默认账号密码: <strong>admin</strong> / <strong>monitor2025!</strong><br><small class="text-danger fw-bold">建议首次登录后修改密码</small>';
     }
 }
 
@@ -5101,6 +5045,7 @@ let currentServerId = null;
 let currentSiteId = null; // For site deletion
 let serverList = [];
 let siteList = []; // For monitored sites
+let hasAddedNewServer = false; // 标记是否添加了新服务器
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', function() {
@@ -5312,6 +5257,25 @@ function initEventListeners() {
     document.getElementById('saveVpsReportIntervalBtn').addEventListener('click', function() {
         saveVpsReportInterval();
     });
+
+    // 服务器模态框关闭事件监听器
+    const serverModal = document.getElementById('serverModal');
+    if (serverModal) {
+        serverModal.addEventListener('hidden.bs.modal', function() {
+            // 检查是否有新添加的服务器需要刷新列表
+            if (hasAddedNewServer) {
+                hasAddedNewServer = false; // 重置标记
+                loadServerList(); // 刷新服务器列表
+            }
+        });
+    }
+
+    // 初始化排序下拉菜单默认选择
+    setTimeout(() => {
+        // 确保DOM已完全加载
+        updateServerSortDropdownSelection('custom');
+        updateSiteSortDropdownSelection('custom');
+    }, 100);
 }
 
 // 获取认证头
@@ -5605,52 +5569,29 @@ async function performServerDragSort(draggedServerId, targetServerId, insertBefo
 async function copyVpsInstallScript(serverId, serverName, buttonElement) {
     const originalButtonHtml = buttonElement.innerHTML;
     buttonElement.disabled = true;
-    buttonElement.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 获取中...';
+    buttonElement.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 生成中...';
 
     try {
-        const apiKeyResponse = await fetch('/api/admin/servers/' + serverId + '/key', {
-            headers: getAuthHeaders()
-        });
-
-        if (!apiKeyResponse.ok) {
-            const errorData = await apiKeyResponse.json().catch(() => ({}));
-            throw new Error(errorData.message || '获取API密钥失败');
-        }
-        const apiKeyData = await apiKeyResponse.json();
-        const apiKey = apiKeyData.api_key;
-
-        if (!apiKey) {
-            throw new Error('未能获取到API密钥');
+        // 直接从本地缓存的服务器列表中获取API密钥，避免API调用
+        const server = serverList.find(s => s.id === serverId);
+        if (!server || !server.api_key) {
+            throw new Error('未找到服务器或API密钥，请刷新页面重试');
         }
 
-        // Fetch the current global VPS report interval
-        let vpsReportInterval = 60; // Default if fetch fails
-        try {
-            const intervalResponse = await fetch('/api/admin/settings/vps-report-interval', { headers: getAuthHeaders() });
-            if (intervalResponse.ok) {
-                const intervalData = await intervalResponse.json();
-                if (intervalData && typeof intervalData.interval === 'number' && intervalData.interval > 0) {
-                    vpsReportInterval = intervalData.interval;
-                }
-            } else {
-                console.warn('Failed to fetch VPS report interval for script, using default.');
-            }
-        } catch (e) {
-            console.warn('Error fetching VPS report interval for script, using default:', e);
-        }
-        
+        const apiKey = server.api_key;
         const workerUrl = window.location.origin;
-        // The base script command provided by the user
+
+        // 使用GitHub上的脚本地址
         const baseScriptUrl = "https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh";
-        // Include the fetched interval in the script command
-        const scriptCommand = 'wget ' + baseScriptUrl + ' -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k ' + apiKey + ' -s ' + serverId + ' -u ' + workerUrl + ' --interval ' + vpsReportInterval;
-        
+        // 生成安装命令（让脚本自动从服务器获取上报间隔）
+        const scriptCommand = 'wget ' + baseScriptUrl + ' -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k ' + apiKey + ' -s ' + serverId + ' -u ' + workerUrl;
+
         await navigator.clipboard.writeText(scriptCommand);
-        
+
         buttonElement.innerHTML = '<i class="bi bi-check-lg"></i> 已复制!';
         buttonElement.classList.remove('btn-outline-info');
         buttonElement.classList.add('btn-success');
-        
+
         showAlert('success', '服务器 "' + serverName + '" 的安装脚本已复制到剪贴板。', 'serverAlert');
 
     } catch (error) {
@@ -5695,16 +5636,17 @@ async function moveServer(serverId, direction) {
 
 // 显示服务器模态框（添加模式）
 function showServerModal() {
-    // 重置表单
+    // 重置表单和标记
     document.getElementById('serverForm').reset();
     document.getElementById('serverId').value = '';
     document.getElementById('apiKeyGroup').classList.add('d-none');
     document.getElementById('serverIdDisplayGroup').classList.add('d-none');
     document.getElementById('workerUrlDisplayGroup').classList.add('d-none');
-    
+    hasAddedNewServer = false; // 重置新服务器标记
+
     // 设置模态框标题
     document.getElementById('serverModalTitle').textContent = '添加服务器';
-    
+
     // 显示模态框
     const serverModal = new bootstrap.Modal(document.getElementById('serverModal'));
     serverModal.show();
@@ -5776,17 +5718,26 @@ async function saveServer() {
         }
         
         data = await response.json();
-        
-        // 隐藏模态框
-        const serverModal = bootstrap.Modal.getInstance(document.getElementById('serverModal'));
-        serverModal.hide();
-        
-        // 如果是新添加的服务器，显示API密钥
+
+        // 如果是新添加的服务器，流畅地切换到密钥显示（不隐藏模态框）
         if (!serverId && data.server && data.server.api_key) {
-            showApiKey(data.server);
+            hasAddedNewServer = true; // 标记已添加新服务器
+
+            // 直接在当前模态框中显示密钥信息，提供流畅的用户体验
+            // 不隐藏模态框，而是切换内容，让用户感觉是自然的过渡
+            showApiKeyInCurrentModal(data.server);
+            showAlert('success', '服务器添加成功');
+
+            // 在后台异步刷新服务器列表
+            loadServerList().catch(error => {
+                console.error('后台刷新服务器列表失败:', error);
+            });
         } else {
-            // 重新加载服务器列表
-            loadServerList();
+            // 编辑服务器的情况，正常隐藏模态框并刷新列表
+            const serverModal = bootstrap.Modal.getInstance(document.getElementById('serverModal'));
+            serverModal.hide();
+
+            await loadServerList();
             showAlert('success', serverId ? '服务器更新成功' : '服务器添加成功');
         }
     } catch (error) {
@@ -5795,43 +5746,53 @@ async function saveServer() {
     }
 }
 
-// 查看API密钥
-async function viewApiKey(serverId) {
+// 查看API密钥（优化版本：直接从本地缓存获取）
+function viewApiKey(serverId) {
     try {
-        const response = await fetch('/api/admin/servers/' + serverId + '/key', {
-            headers: getAuthHeaders()
-        });
-        
-        if (!response.ok) {
-            throw new Error('获取API密钥失败');
-        }
-        const data = await response.json();
-        if (data.api_key) {
-            // Find the server details from the cached list
-            const server = serverList.find(s => s.id === serverId);
-            if (server) {
-                // Create a temporary object with the fetched key
-                const serverWithKey = { ...server, api_key: data.api_key };
-                showApiKey(serverWithKey); // Pass the complete server object
-            } else {
-                 showAlert('danger', '未找到服务器信息', 'serverAlert');
-            }
+        // 直接从本地缓存的服务器列表中获取服务器信息
+        const server = serverList.find(s => s.id === serverId);
+        if (server && server.api_key) {
+            showApiKey(server);
         } else {
-            showAlert('danger', '获取API密钥失败', 'serverAlert');
+            showAlert('danger', '未找到服务器信息或API密钥，请刷新页面重试', 'serverAlert');
         }
     } catch (error) {
         console.error('查看API密钥错误:', error);
-        showAlert('danger', '获取API密钥失败，请稍后重试', 'serverAlert');
+        showAlert('danger', '查看API密钥失败，请稍后重试', 'serverAlert');
     }
 }
 
-// 显示API密钥
+// 在当前模态框中显示API密钥（用于添加服务器后的流畅过渡）
+function showApiKeyInCurrentModal(server) {
+    // 填充表单数据
+    document.getElementById('serverId').value = server.id;
+    document.getElementById('serverName').value = server.name;
+    document.getElementById('serverDescription').value = server.description || '';
+
+    // 显示API密钥、服务器ID和Worker URL
+    document.getElementById('apiKey').value = server.api_key;
+    document.getElementById('apiKeyGroup').classList.remove('d-none');
+
+    document.getElementById('serverIdDisplay').value = server.id;
+    document.getElementById('serverIdDisplayGroup').classList.remove('d-none');
+
+    document.getElementById('workerUrlDisplay').value = window.location.origin;
+    document.getElementById('workerUrlDisplayGroup').classList.remove('d-none');
+
+    // 更新模态框标题
+    document.getElementById('serverModalTitle').textContent = '服务器详细信息与密钥';
+
+    // 注意：不创建新的模态框，而是在当前模态框中切换内容
+    // 这样用户感觉是自然的内容过渡，而不是突然弹出新窗口
+}
+
+// 显示API密钥（用于查看密钥按钮）
 function showApiKey(server) {
     // 填充表单
     document.getElementById('serverId').value = server.id; // Hidden input for form submission if needed
     document.getElementById('serverName').value = server.name;
     document.getElementById('serverDescription').value = server.description || '';
-    
+
     // Populate and show API Key, Server ID, and Worker URL
     document.getElementById('apiKey').value = server.api_key;
     document.getElementById('apiKeyGroup').classList.remove('d-none');
@@ -5841,10 +5802,10 @@ function showApiKey(server) {
 
     document.getElementById('workerUrlDisplay').value = window.location.origin;
     document.getElementById('workerUrlDisplayGroup').classList.remove('d-none');
-    
+
     // 设置模态框标题
     document.getElementById('serverModalTitle').textContent = '服务器详细信息与密钥';
-    
+
     // 显示模态框
     const serverModal = new bootstrap.Modal(document.getElementById('serverModal'));
     serverModal.show();
@@ -6544,6 +6505,9 @@ async function autoSortServers(sortBy) {
             throw new Error(errorData.message || '自动排序失败');
         }
 
+        // 更新下拉菜单选中状态
+        updateServerSortDropdownSelection(sortBy);
+
         // 重新加载服务器列表
         await loadServerList();
         showAlert('success', \`服务器已按\${getSortDisplayName(sortBy)}排序\`, 'serverAlert');
@@ -6568,6 +6532,9 @@ async function autoSortSites(sortBy) {
             throw new Error(errorData.message || '自动排序失败');
         }
 
+        // 更新下拉菜单选中状态
+        updateSiteSortDropdownSelection(sortBy);
+
         // 重新加载网站列表
         await loadSiteList();
         showAlert('success', \`网站已按\${getSortDisplayName(sortBy)}排序\`, 'siteAlert');
@@ -6581,6 +6548,7 @@ async function autoSortSites(sortBy) {
 // 获取排序字段的显示名称
 function getSortDisplayName(sortBy) {
     const displayNames = {
+        'custom': '自定义',
         'name': '名称',
         'status': '状态',
         'created_at': '创建时间',
@@ -6588,6 +6556,40 @@ function getSortDisplayName(sortBy) {
         'url': 'URL'
     };
     return displayNames[sortBy] || sortBy;
+}
+
+// 更新服务器排序下拉菜单选中状态
+function updateServerSortDropdownSelection(selectedSortBy) {
+    const dropdown = document.querySelector('#serverAutoSortDropdown + .dropdown-menu');
+    if (!dropdown) return;
+
+    // 移除所有active类
+    dropdown.querySelectorAll('.dropdown-item').forEach(item => {
+        item.classList.remove('active');
+    });
+
+    // 为选中的项添加active类
+    const selectedItem = dropdown.querySelector(\`[onclick="autoSortServers('\${selectedSortBy}')"]\`);
+    if (selectedItem) {
+        selectedItem.classList.add('active');
+    }
+}
+
+// 更新网站排序下拉菜单选中状态
+function updateSiteSortDropdownSelection(selectedSortBy) {
+    const dropdown = document.querySelector('#siteAutoSortDropdown + .dropdown-menu');
+    if (!dropdown) return;
+
+    // 移除所有active类
+    dropdown.querySelectorAll('.dropdown-item').forEach(item => {
+        item.classList.remove('active');
+    });
+
+    // 为选中的项添加active类
+    const selectedItem = dropdown.querySelector(\`[onclick="autoSortSites('\${selectedSortBy}')"]\`);
+    if (selectedItem) {
+        selectedItem.classList.add('active');
+    }
 }
 `;
 }
