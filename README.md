@@ -38,7 +38,7 @@ VPS端：
 5.  为数据库命名（例如 `vps-monitor-db`），然后点击 `创建`。
 6.  **重要：初始化数据库表**
     *   数据库创建后，你会看到数据库的概览页面。点击 `控制台` 标签页。
-    *   复制下面的第一段 SQL 命令，粘贴到控制台的输入框中，然后点击 `执行`：
+    *   复制下面的 SQL 命令，粘贴到控制台的输入框中，然后点击 `执行`：
 ```
 CREATE TABLE IF NOT EXISTS admin_credentials (
   username TEXT PRIMARY KEY,
