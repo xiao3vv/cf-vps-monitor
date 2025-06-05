@@ -694,9 +694,17 @@ check_json_object() {
         return 1
     fi
 
-    # 检查是否包含基本的JSON结构
-    if [[ ! "$json_str" =~ \":\" ]]; then
+    # 检查是否包含基本的JSON结构（更宽松的检查）
+    # 检查是否包含冒号和引号，这是JSON键值对的基本特征
+    if [[ ! "$json_str" =~ \":\" ]] && [[ ! "$json_str" =~ [0-9]+\.[0-9]+ ]] && [[ ! "$json_str" =~ [0-9]+ ]]; then
+        # 只有当既没有冒号，也没有数字时才报错
         log "警告: ${object_name}数据缺少键值对"
+        return 1
+    fi
+
+    # 额外检查：确保不是空对象
+    if [[ "$json_str" == "{}" ]]; then
+        log "警告: ${object_name}数据为空对象"
         return 1
     fi
 
@@ -721,20 +729,20 @@ report_metrics() {
     disk_raw=$(clean_json_string "$disk_raw")
     network_raw=$(clean_json_string "$network_raw")
 
-    # 验证各个JSON组件
-    if ! check_json_object "$cpu_raw" "CPU" || [[ "$cpu_raw" == "{}" ]]; then
+    # 验证各个JSON组件（使用更宽松的验证）
+    if [[ -z "$cpu_raw" || "$cpu_raw" == "{}" || ! "$cpu_raw" =~ ^\{.*\}$ ]]; then
         log "使用默认CPU数据"
         cpu_raw='{"usage_percent":0,"load_avg":[0,0,0]}'
     fi
-    if ! check_json_object "$memory_raw" "内存" || [[ "$memory_raw" == "{}" ]]; then
+    if [[ -z "$memory_raw" || "$memory_raw" == "{}" || ! "$memory_raw" =~ ^\{.*\}$ ]]; then
         log "使用默认内存数据"
         memory_raw='{"total":0,"used":0,"free":0,"usage_percent":0}'
     fi
-    if ! check_json_object "$disk_raw" "磁盘" || [[ "$disk_raw" == "{}" ]]; then
+    if [[ -z "$disk_raw" || "$disk_raw" == "{}" || ! "$disk_raw" =~ ^\{.*\}$ ]]; then
         log "使用默认磁盘数据"
         disk_raw='{"total":0,"used":0,"free":0,"usage_percent":0}'
     fi
-    if ! check_json_object "$network_raw" "网络" || [[ "$network_raw" == "{}" ]]; then
+    if [[ -z "$network_raw" || "$network_raw" == "{}" || ! "$network_raw" =~ ^\{.*\}$ ]]; then
         log "使用默认网络数据"
         network_raw='{"upload_speed":0,"download_speed":0,"total_upload":0,"total_download":0}'
     fi
@@ -924,17 +932,17 @@ report_metrics() {
     disk_raw=\$(clean_json_string "\$disk_raw")
     network_raw=\$(clean_json_string "\$network_raw")
 
-    # 验证各个JSON组件
-    if [[ -z "\$cpu_raw" || "\$cpu_raw" == "{}" ]]; then
+    # 验证各个JSON组件（使用更宽松的验证）
+    if [[ -z "\$cpu_raw" || "\$cpu_raw" == "{}" || ! "\$cpu_raw" =~ ^\{.*\}\$ ]]; then
         cpu_raw='{\\"usage_percent\\":0,\\"load_avg\\":[0,0,0]}'
     fi
-    if [[ -z "\$memory_raw" || "\$memory_raw" == "{}" ]]; then
+    if [[ -z "\$memory_raw" || "\$memory_raw" == "{}" || ! "\$memory_raw" =~ ^\{.*\}\$ ]]; then
         memory_raw='{\\"total\\":0,\\"used\\":0,\\"free\\":0,\\"usage_percent\\":0}'
     fi
-    if [[ -z "\$disk_raw" || "\$disk_raw" == "{}" ]]; then
+    if [[ -z "\$disk_raw" || "\$disk_raw" == "{}" || ! "\$disk_raw" =~ ^\{.*\}\$ ]]; then
         disk_raw='{\\"total\\":0,\\"used\\":0,\\"free\\":0,\\"usage_percent\\":0}'
     fi
-    if [[ -z "\$network_raw" || "\$network_raw" == "{}" ]]; then
+    if [[ -z "\$network_raw" || "\$network_raw" == "{}" || ! "\$network_raw" =~ ^\{.*\}\$ ]]; then
         network_raw='{\\"upload_speed\\":0,\\"download_speed\\":0,\\"total_upload\\":0,\\"total_download\\":0}'
     fi
 
