@@ -650,65 +650,13 @@ sanitize_integer() {
     fi
 }
 
-# 验证JSON数据
-validate_json_data() {
-    local data="$1"
 
-    # 检查是否包含无效字符
-    if [[ "$data" =~ [^[:print:]] ]]; then
-        log "警告: JSON数据包含非打印字符"
-        return 1
-    fi
-
-    # 检查是否有未闭合的引号或括号
-    local quote_count=$(echo "$data" | grep -o '"' | wc -l)
-    if [[ $((quote_count % 2)) -ne 0 ]]; then
-        log "警告: JSON数据包含未闭合的引号"
-        return 1
-    fi
-
-    return 0
-}
 
 # 清理JSON字符串
 clean_json_string() {
     local input="$1"
     # 移除可能的控制字符和非打印字符
     echo "$input" | tr -d '\000-\037' | tr -d '\177-\377'
-}
-
-# 检查JSON对象完整性
-check_json_object() {
-    local json_str="$1"
-    local object_name="$2"
-
-    # 检查是否为空或只包含空白字符
-    if [[ -z "$json_str" || "$json_str" =~ ^[[:space:]]*$ ]]; then
-        log "警告: ${object_name}数据为空"
-        return 1
-    fi
-
-    # 检查是否以{开头和}结尾
-    if [[ ! "$json_str" =~ ^\{.*\}$ ]]; then
-        log "警告: ${object_name}数据格式不正确，不是有效的JSON对象"
-        return 1
-    fi
-
-    # 检查是否包含基本的JSON结构（更宽松的检查）
-    # 检查是否包含冒号和引号，这是JSON键值对的基本特征
-    if [[ ! "$json_str" =~ \":\" ]] && [[ ! "$json_str" =~ [0-9]+\.[0-9]+ ]] && [[ ! "$json_str" =~ [0-9]+ ]]; then
-        # 只有当既没有冒号，也没有数字时才报错
-        log "警告: ${object_name}数据缺少键值对"
-        return 1
-    fi
-
-    # 额外检查：确保不是空对象
-    if [[ "$json_str" == "{}" ]]; then
-        log "警告: ${object_name}数据为空对象"
-        return 1
-    fi
-
-    return 0
 }
 
 # 上报监控数据
@@ -749,12 +697,6 @@ report_metrics() {
 
     # 构建JSON数据
     local data="{\"timestamp\":$timestamp,\"cpu\":$cpu_raw,\"memory\":$memory_raw,\"disk\":$disk_raw,\"network\":$network_raw,\"uptime\":$uptime}"
-
-    # 验证最终JSON
-    if ! validate_json_data "$data"; then
-        log "JSON数据验证失败，使用默认数据"
-        data="{\"timestamp\":$timestamp,\"cpu\":{\"usage_percent\":0,\"load_avg\":[0,0,0]},\"memory\":{\"total\":0,\"used\":0,\"free\":0,\"usage_percent\":0},\"disk\":{\"total\":0,\"used\":0,\"free\":0,\"usage_percent\":0},\"network\":{\"upload_speed\":0,\"download_speed\":0,\"total_upload\":0,\"total_download\":0},\"uptime\":$uptime}"
-    fi
 
     log "正在上报数据到 $WORKER_URL/api/report/$SERVER_ID"
 
@@ -804,37 +746,15 @@ report_metrics() {
     else
         log "数据上报失败 (HTTP $http_code): $response_body"
 
-        # 解析错误详情并提供更好的错误信息
+        # 简化的错误处理
         case "$http_code" in
-            "400")
-                log "错误详情: 数据格式错误 - 请检查系统监控数据收集是否正常"
-                if [[ "$response_body" == *"JSON"* ]]; then
-                    log "JSON格式错误 - 检查数据完整性:"
-                    log "  CPU数据: $cpu_raw"
-                    log "  内存数据: $memory_raw"
-                    log "  磁盘数据: $disk_raw"
-                    log "  网络数据: $network_raw"
-                    log "  运行时间: $uptime"
-                fi
-                ;;
-            "401")
-                log "错误详情: 认证失败 - 请检查API密钥是否正确"
-                ;;
-            "404")
-                log "错误详情: 服务器不存在 - 请检查服务器ID是否正确"
-                ;;
-            "429")
-                log "错误详情: 请求过于频繁 - 将自动重试"
-                ;;
-            "500"|"503")
-                log "错误详情: 服务器错误 - 将在下个周期重试"
-                ;;
-            "000")
-                log "错误详情: 网络连接失败 - 请检查网络连接和Worker URL"
-                ;;
-            *)
-                log "错误详情: 未知错误 (HTTP $http_code)"
-                ;;
+            "400") log "数据格式错误" ;;
+            "401") log "认证失败 - 请检查API密钥" ;;
+            "404") log "服务器不存在 - 请检查服务器ID" ;;
+            "429") log "请求过于频繁 - 将自动重试" ;;
+            "500"|"503") log "服务器错误 - 将在下个周期重试" ;;
+            "000") log "网络连接失败" ;;
+            *) log "未知错误 (HTTP $http_code)" ;;
         esac
 
         return 1
@@ -888,7 +808,7 @@ source_monitoring_functions() {
         /^# 获取系统运行时间/,/^}/ { if (/^}/) print; else print; next }
         /^# 验证和清理数值/,/^}/ { if (/^}/) print; else print; next }
         /^# 验证和清理整数/,/^}/ { if (/^}/) print; else print; next }
-        /^# 检查JSON对象完整性/,/^}/ { if (/^}/) print; else print; next }
+
         /^command_exists\(\)/ { print; getline; print; getline; print; next }
         ' "\$MAIN_SCRIPT" > "\$temp_functions"
 
@@ -987,37 +907,15 @@ EOL
     else
         log "数据上报失败 (HTTP \$http_code): \$response_body"
 
-        # 解析错误详情并提供更好的错误信息
+        # 简化的错误处理
         case "\$http_code" in
-            "400")
-                log "错误详情: 数据格式错误 - 请检查系统监控数据收集是否正常"
-                if [[ "\$response_body" == *"JSON"* ]]; then
-                    log "JSON格式错误 - 检查数据完整性:"
-                    log "  CPU数据: \$cpu_raw"
-                    log "  内存数据: \$memory_raw"
-                    log "  磁盘数据: \$disk_raw"
-                    log "  网络数据: \$network_raw"
-                    log "  运行时间: \$uptime"
-                fi
-                ;;
-            "401")
-                log "错误详情: 认证失败 - 请检查API密钥是否正确"
-                ;;
-            "404")
-                log "错误详情: 服务器不存在 - 请检查服务器ID是否正确"
-                ;;
-            "429")
-                log "错误详情: 请求过于频繁 - 将自动重试"
-                ;;
-            "500"|"503")
-                log "错误详情: 服务器错误 - 将在下个周期重试"
-                ;;
-            "000")
-                log "错误详情: 网络连接失败 - 请检查网络连接和Worker URL"
-                ;;
-            *)
-                log "错误详情: 未知错误 (HTTP \$http_code)"
-                ;;
+            "400") log "数据格式错误" ;;
+            "401") log "认证失败 - 请检查API密钥" ;;
+            "404") log "服务器不存在 - 请检查服务器ID" ;;
+            "429") log "请求过于频繁 - 将自动重试" ;;
+            "500"|"503") log "服务器错误 - 将在下个周期重试" ;;
+            "000") log "网络连接失败" ;;
+            *) log "未知错误 (HTTP \$http_code)" ;;
         esac
 
         return 1
