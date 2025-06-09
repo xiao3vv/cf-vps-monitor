@@ -24,7 +24,7 @@ SCRIPT_DIR="$HOME/.cf-vps-monitor"
 CONFIG_FILE="$SCRIPT_DIR/config"
 LOG_FILE="$SCRIPT_DIR/monitor.log"
 PID_FILE="$SCRIPT_DIR/monitor.pid"
-SERVICE_FILE="$SCRIPT_DIR/monitor-service.sh"
+SERVICE_FILE="$SCRIPT_DIR/vps-monitor-service.sh"
 SYSTEMD_SERVICE_FILE="$HOME/.config/systemd/user/cf-vps-monitor.service"
 
 # 默认配置
@@ -485,7 +485,7 @@ create_directories() {
         if ! mkdir -p "$systemd_user_dir" 2>/dev/null; then
             print_message "$YELLOW" "警告: 无法创建systemd用户目录，将使用传统服务方式"
         else
-            SYSTEMD_SERVICE_FILE="$systemd_user_dir/vps-monitor.service"
+            SYSTEMD_SERVICE_FILE="$systemd_user_dir/cf-vps-monitor.service"
         fi
     fi
 
