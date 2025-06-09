@@ -5659,7 +5659,7 @@ async function copyVpsInstallScript(serverId, serverName, buttonElement) {
         const workerUrl = window.location.origin;
 
         // 使用GitHub上的脚本地址
-        const baseScriptUrl = "https://raw.githubusercontent.com/kadidalax/cf-vps-monitor/main/cf-vps-monitor.sh";
+        const baseScriptUrl = "https://raw.githubusercontent.com/xiao3vv/cf-vps-monitor/main/cf-vps-monitor.sh";
         // 生成安装命令（让脚本自动从服务器获取上报间隔）
         const scriptCommand = 'wget ' + baseScriptUrl + ' -O cf-vps-monitor.sh && chmod +x cf-vps-monitor.sh && ./cf-vps-monitor.sh -i -k ' + apiKey + ' -s ' + serverId + ' -u ' + workerUrl;
 
