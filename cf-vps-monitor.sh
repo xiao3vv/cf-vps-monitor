@@ -1560,9 +1560,9 @@ check_service_status() {
 
     # 检查systemd状态
     if [[ -f "$SYSTEMD_SERVICE_FILE" ]] && command_exists systemctl; then
-        if systemctl --user is-active vps-monitor.service >/dev/null 2>&1; then
+        if systemctl --user is-active cf-vps-monitor.service >/dev/null 2>&1; then
             print_message "$GREEN" "✓ systemd服务运行中"
-            systemctl --user status vps-monitor.service --no-pager -l
+            systemctl --user status cf-vps-monitor.service --no-pager -l
             running=true
         else
             print_message "$YELLOW" "✗ systemd服务未运行"
